@@ -52,7 +52,7 @@ echo "==> Building Release macOS app bundle..."
 (
   cd "$ROOT/flutter_app"
   flutter pub get
-  flutter build macos --release --no-codesign --dart-define=MAPRISMA_RELEASE=true
+  flutter build macos --release --dart-define=MAPRISMA_RELEASE=true
 )
 
 BUILT_APP="$ROOT/flutter_app/build/macos/Build/Products/Release/Maprisma.app"
@@ -97,7 +97,8 @@ if [[ -f "$ROOT/addons.py" && -d "$ADDONS_REPO/dist" ]]; then
 fi
 
 echo "==> Ad-hoc signing dist/Maprisma.app..."
-codesign --force --deep -s - "$DIST_APP"
+codesign --force -s - "$DIST_APP/Contents/MacOS/maprisma-core"
+codesign --force --deep --entitlements "$ROOT/flutter_app/macos/Runner/Release.entitlements" -s - "$DIST_APP"
 codesign --verify --deep --strict "$DIST_APP"
 
 echo "==> Built: $DIST_APP"
