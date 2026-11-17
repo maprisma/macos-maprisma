@@ -334,6 +334,12 @@ Future<int> runWorker(List<String> args) async {
         throw const FormatException('Request too large');
       }
     }
+    if (Platform.isMacOS) {
+      // Dart's stdin stream closes fd 0 on EOF; reserve fd 0 with /dev/null in
+      // the worker so Process.start pipes on Darwin never land on fd 0.
+      final guardFd = Posix().openAt(Posix.atFdCwd, '/dev/null', Posix.rdonly);
+      if (guardFd > 2) Posix().close(guardFd);
+    }
     final bytes = input.takeBytes();
     final newline = bytes.indexOf(10);
     if (newline < 0 || newline > 64 * 1024) {
