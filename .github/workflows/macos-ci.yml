@@ -30,7 +30,7 @@ jobs:
         working-directory: packages/maprisma_core
         run: |
           dart pub get
-          dart analyze --no-fatal-infos
+          dart analyze
           dart test
 
       - name: Analyze & test flutter_app
