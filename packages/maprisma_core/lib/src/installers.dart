@@ -6,7 +6,12 @@ import 'package:path/path.dart' as p;
 import 'context.dart' show bestContext;
 import 'desktop.dart' show whichIn;
 import 'macos_platform.dart'
-    show buildLaunchAgentPlist, janRootPath, macosHardwareInfo;
+    show
+        buildLaunchAgentPlist,
+        buildMacosEnvFileExecArgs,
+        janRootPath,
+        macosHardwareInfo,
+        parseEnvFileLines;
 import 'model_downloads.dart';
 import 'model_hub.dart' show boundedOutput, netFetch;
 import 'posix_ffi.dart';
@@ -469,6 +474,59 @@ int openVerified(ModelFiles files, String path, String digest) {
   }
 }
 
+/// Passes a child-process-readable path for the verified descriptor [fd] to
+/// [action]. On Linux `/proc/<pid>/fd/<fd>` re-opens the underlying inode across
+/// `exec`; on macOS `/dev/fd/<fd>` refers to the child's own fd table where
+/// `O_CLOEXEC` has already closed [fd], so the verified bytes are copied
+/// in-process from [fd] into a private `0600` file inside a `0700` temporary
+/// directory (cleaned up in `finally`).
+Future<T> withVerifiedFdPath<T>(
+  Posix posix,
+  int fd,
+  String assetName,
+  Future<T> Function(String verifiedPath) action, {
+  bool? stageCopy,
+}) async {
+  if (!(stageCopy ?? Platform.isMacOS)) {
+    return action('/proc/$pid/fd/$fd');
+  }
+  final safeName = p
+      .basename(assetName)
+      .replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_');
+  final stageDir = Directory.systemTemp.createTempSync('maprisma-verified-');
+  try {
+    posix.chmodPath(stageDir.path, 0x1c0); // 0700
+    final dirStat = posix.lstatOwn(stageDir.path);
+    if (dirStat == null ||
+        dirStat.uid != posix.uid ||
+        dirStat.mode & 0x3f != 0) {
+      throw StateError('could not create private staging directory');
+    }
+    final staged = '${stageDir.path}/${safeName.isEmpty ? 'asset' : safeName}';
+    final outFd = posix.openAt(
+      Posix.atFdCwd,
+      staged,
+      Posix.wronly | Posix.creat | Posix.excl | Posix.noFollow,
+      0x180, // 0600
+    );
+    try {
+      var offset = 0;
+      while (true) {
+        final chunk = posix.readAt(fd, offset, 1024 * 1024);
+        if (chunk.isEmpty) break;
+        posix.write(outFd, chunk);
+        offset += chunk.length;
+      }
+    } finally {
+      posix.close(outFd);
+    }
+    posix.rewind(fd);
+    return await action(staged);
+  } finally {
+    _rmtree(stageDir.path);
+  }
+}
+
 /// The program an Installer works with: the account's own files.
 final class InstallHost {
   InstallHost(this.home, this.posix, {this.path});
@@ -847,8 +905,12 @@ abstract class Installer {
         release.digests[asset]!,
       );
       try {
-        final fdPath = Platform.isMacOS ? '/dev/fd/$fd' : '/proc/$pid/fd/$fd';
-        await unpack(fdPath, partial, name: asset);
+        await withVerifiedFdPath(
+          host.posix,
+          fd,
+          asset,
+          (verifiedPath) => unpack(verifiedPath, partial, name: asset),
+        );
       } finally {
         host.posix.close(fd);
       }
@@ -1020,16 +1082,14 @@ WantedBy=default.target
     checkEnvValue('${host.binDir}/$command');
     return buildLaunchAgentPlist(
       label: 'com.maprisma.$service',
-      programArguments: [
-        '/bin/sh',
-        '-c',
-        r'set -a; [ -r "$1" ] && . "$1"; set +a; shift; exec "$@"',
-        'sh',
-        envFile,
+      programArguments: buildMacosEnvFileExecArgs(envFile, [
         '${host.binDir}/$command',
         'serve',
-      ],
-      environment: {'MAPRISMA_ENV_FILE': envFile},
+      ]),
+      environment: {
+        'MAPRISMA_ENV_FILE': envFile,
+        ...parseEnvFileLines(envText(models, gpu)),
+      },
       runAtLoad: runAtLoad,
       keepAlive: runAtLoad,
       comment: 'installed by Maprisma',
@@ -1197,12 +1257,7 @@ WantedBy=default.target
     checkEnvValue(preset);
     return buildLaunchAgentPlist(
       label: 'com.maprisma.$service',
-      programArguments: [
-        '/bin/sh',
-        '-c',
-        r'set -a; [ -r "$1" ] && . "$1"; set +a; shift; exec "$@"',
-        'sh',
-        envFile,
+      programArguments: buildMacosEnvFileExecArgs(envFile, [
         '${host.binDir}/$command',
         '--models-preset',
         preset,
@@ -1210,8 +1265,11 @@ WantedBy=default.target
         'all',
         '--flash-attn',
         'on',
-      ],
-      environment: {'MAPRISMA_ENV_FILE': envFile},
+      ]),
+      environment: {
+        'MAPRISMA_ENV_FILE': envFile,
+        ...parseEnvFileLines(envText(models, gpu)),
+      },
       runAtLoad: runAtLoad,
       keepAlive: runAtLoad,
       comment: 'installed by Maprisma',
@@ -1367,12 +1425,7 @@ WantedBy=default.target
     final b = buildOf();
     return buildLaunchAgentPlist(
       label: 'com.maprisma.$service',
-      programArguments: [
-        '/bin/sh',
-        '-c',
-        r'set -a; [ -r "$1" ] && . "$1"; set +a; shift; exec "$@"',
-        'sh',
-        envFile,
+      programArguments: buildMacosEnvFileExecArgs(envFile, [
         '${host.binDir}/$command',
         '--skiplauncher',
         '--nomodel',
@@ -1386,8 +1439,11 @@ WantedBy=default.target
         address.substring(at + 1),
         if (b == 'cpu') '--usecpu',
         '--quiet',
-      ],
-      environment: {'MAPRISMA_ENV_FILE': envFile},
+      ]),
+      environment: {
+        'MAPRISMA_ENV_FILE': envFile,
+        ...parseEnvFileLines(envText(models, gpu)),
+      },
       runAtLoad: runAtLoad,
       keepAlive: runAtLoad,
       comment: 'installed by Maprisma',
@@ -1914,14 +1970,18 @@ final class StrataInstaller extends Installer {
       final files = ModelFiles(host.posix);
       final fd = openVerified(files, script, release.digests[asset]!);
       try {
-        final fdPath = Platform.isMacOS ? '/dev/fd/$fd' : '/proc/$pid/fd/$fd';
-        (out, ok) = await boundedOutput(
-          ['sh', fdPath],
-          maxBytes: 256 * 1024,
-          timeout: timeout,
-          mergeStderr: true,
-          environment: env,
-          inheritEnvironment: false,
+        (out, ok) = await withVerifiedFdPath(
+          host.posix,
+          fd,
+          asset,
+          (verifiedPath) => boundedOutput(
+            ['sh', verifiedPath],
+            maxBytes: 256 * 1024,
+            timeout: timeout,
+            mergeStderr: true,
+            environment: env,
+            inheritEnvironment: false,
+          ),
         );
       } finally {
         host.posix.close(fd);

@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'agent_catalog.dart';
 import 'agent_details.dart';
-import 'macos_platform.dart' show macosProcessOpenFiles;
+import 'macos_platform.dart' show macosProcessCpuSeconds, macosProcessOpenFiles;
 import 'provider_scans.dart';
 import 'scan_files.dart';
 import 'session_readers.dart';
@@ -143,25 +143,34 @@ final class ActivityReaders {
         activity = <String, dynamic>{};
     for (final agent in names.values) {
       final owned = pids[agent.command] ?? [];
+      final sampled = owned.take(32).toList();
+      final macCpu = Platform.isMacOS && provider.proc == '/proc'
+          ? macosProcessCpuSeconds(sampled)
+          : const <int, double>{};
+      final hz = ticks > 0 ? ticks : 100;
       var cpu = 0.0;
-      for (final pid in owned.take(32)) {
+      for (final pid in sampled) {
+        int? value;
         final stat = files.text('${provider.proc}/$pid/stat', limit: 4096);
-        if (stat == null || !stat.contains(')')) continue;
-        final parts = stat
-            .substring(stat.lastIndexOf(')') + 2)
-            .trim()
-            .split(RegExp(r'\s+'));
-        if (parts.length < 15) continue;
-        final value = parts
-            .sublist(11, 15)
-            .fold<int>(0, (n, v) => n + (int.tryParse(v) ?? 0));
+        if (stat != null && stat.contains(')')) {
+          final parts = stat
+              .substring(stat.lastIndexOf(')') + 2)
+              .trim()
+              .split(RegExp(r'\s+'));
+          if (parts.length >= 15) {
+            value = parts
+                .sublist(11, 15)
+                .fold<int>(0, (n, v) => n + (int.tryParse(v) ?? 0));
+          }
+        } else if (macCpu.containsKey(pid)) {
+          value = (macCpu[pid]! * hz).round();
+        }
+        if (value == null) continue;
         seen[pid] = (value, clock);
         final before = previous[pid];
         if (before != null && clock > before.$2) {
           cpu +=
-              (value - before.$1).clamp(0, 1 << 62) /
-              (ticks > 0 ? ticks : 100) /
-              (clock - before.$2);
+              (value - before.$1).clamp(0, 1 << 62) / hz / (clock - before.$2);
         }
       }
       final stamp = agent.adapter.facts['activity'] as List? ?? [];

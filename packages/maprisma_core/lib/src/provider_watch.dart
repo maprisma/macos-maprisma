@@ -4,7 +4,11 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'identity.dart';
 import 'macos_platform.dart'
-    show buildLaunchAgentPlist, macosPortInUse, macosProcesses;
+    show
+        buildLaunchAgentPlist,
+        macosLaunchctlControl,
+        macosPortInUse,
+        macosProcesses;
 import 'model_guard.dart' show agentInstances;
 import 'posix_ffi.dart';
 import 'agent_catalog.dart';
@@ -563,11 +567,13 @@ final class Watcher {
     required this.unload,
     required this.lmsBinary,
     this.state,
+    this.home = '',
   }) {
     loadState();
   }
   final String config;
   final String? state;
+  final String home;
   final Future<bool> Function(List<String> argv) run;
   final double Function() clock;
   final (Set<String>, Set<int>) Function(Set<String> names) agentsNow;
@@ -671,7 +677,7 @@ final class Watcher {
                 '-k',
                 'gui/$uid/${entry['service']}',
               ]
-            : ['/bin/launchctl', 'stop', '${entry['service']}'];
+            : ['/bin/launchctl', 'bootout', 'gui/$uid/${entry['service']}'];
       }
       return ['systemctl', '--user', action, '${entry['service']}.service'];
     }
@@ -680,6 +686,26 @@ final class Watcher {
       return [lms, 'server', action];
     }
     return null;
+  }
+
+  Future<bool?> _runRuntimeAction(Map entry, String action) async {
+    final service = '${entry['service'] ?? ''}';
+    if (service.isNotEmpty && Platform.isMacOS) {
+      final resolvedHome = home.isNotEmpty
+          ? home
+          : (Platform.environment['HOME'] ?? '');
+      final (ok, _) = await macosLaunchctlControl(
+        service: service,
+        action: action,
+        uid: Posix().uid,
+        home: resolvedHome,
+        run: (argv) async => (await run(argv), ''),
+      );
+      return ok;
+    }
+    final argv = command(entry, action);
+    if (argv == null) return null;
+    return run(argv);
   }
 
   Future<bool> stop(String key, String why) async {
@@ -695,10 +721,12 @@ final class Watcher {
       return true;
     }
     final argv = command(entry, 'stop');
-    if (argv != null) {
-      final ok = await run(argv);
+    final ok = await _runRuntimeAction(entry, 'stop');
+    if (ok != null) {
       watchLog('stop $key ($why): ${ok ? 'ok' : 'failed'}');
-      if (entry['control'] == 'lms' && !lmsWasUp) await stopLms(argv.first);
+      if (entry['control'] == 'lms' && !lmsWasUp && argv != null) {
+        await stopLms(argv.first);
+      }
     }
     started.remove(key);
     started.remove('$key:ok');
@@ -713,14 +741,15 @@ final class Watcher {
       final last = started[key] as double?;
       if (!needed.contains(key) ||
           last != null && now - last > retry && started['$key:ok'] != true) {
-        final argv = command(runtimes[key]!, 'start');
+        final entry = runtimes[key]!;
+        final argv = command(entry, 'start');
         if (argv != null &&
-            runtimes[key]!['control'] == 'lms' &&
+            entry['control'] == 'lms' &&
             !needed.contains(key)) {
           lmsWasUp = lmsUp();
         }
-        if (argv != null) {
-          final ok = await run(argv);
+        final ok = await _runRuntimeAction(entry, 'start');
+        if (ok != null) {
           started[key] = now;
           started['$key:ok'] = ok;
           final users = [
@@ -791,6 +820,7 @@ Future<int> runProviderWatch(List<String> args) async {
     unload: system.unload,
     lmsBinary: system.lmsBinary,
     state: p.join(home, '.local/state/maprisma/provider-watch.json'),
+    home: home,
   );
   String stamp() {
     try {

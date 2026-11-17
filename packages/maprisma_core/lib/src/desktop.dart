@@ -8,6 +8,7 @@ import 'identity.dart';
 import 'macos_platform.dart'
     show
         macosBrewInstallCommand,
+        macosCommandCEnv,
         parseAppleInterfaceStyle,
         resolveMacosTerminalCommand;
 import 'posix_ffi.dart';
@@ -242,11 +243,12 @@ final class MacosDesktop implements Desktop {
     }
     _styleAt = now;
     try {
-      final r = Process.runSync('/usr/bin/defaults', const [
-        'read',
-        '-g',
-        'AppleInterfaceStyle',
-      ], stdoutEncoding: const Utf8Codec(allowMalformed: true));
+      final r = Process.runSync(
+        '/usr/bin/defaults',
+        const ['read', '-g', 'AppleInterfaceStyle'],
+        environment: macosCommandCEnv(environment),
+        stdoutEncoding: const Utf8Codec(allowMalformed: true),
+      );
       _style = parseAppleInterfaceStyle(r.exitCode, r.stdout as String? ?? '');
     } on ProcessException {
       _style = 'light';

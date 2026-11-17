@@ -257,6 +257,15 @@ List<MacosProcess> parseMacosPs(String output, {int? onlyUid}) {
 DateTime? _psCacheAt;
 List<MacosProcess> _psCache = const [];
 
+/// Forces C locale (`LC_ALL=C`, `LANG=C`) when running BSD/macOS inspection
+/// tools (`ps`, `lsof`, `df`, `mount`, `sysctl`, `ioreg`) so weekday/month names
+/// (e.g. `lstart=` on a German `de_DE.UTF-8` Mac) and numeric formatting never
+/// change with the user's locale.
+Map<String, String> macosCommandCEnv([Map<String, String>? base]) {
+  final env = base ?? Platform.environment;
+  return {...env, 'LC_ALL': 'C', 'LANG': 'C'};
+}
+
 /// Lists processes on macOS via `/bin/ps`, with a 200ms cache so callers that
 /// inspect both process list and parent/group relationships do not spawn `ps`
 /// repeatedly in a single scan.
@@ -266,10 +275,12 @@ List<MacosProcess> macosProcesses({bool fresh = false, int? onlyUid}) {
       _psCacheAt == null ||
       now.difference(_psCacheAt!).inMilliseconds >= 200) {
     try {
-      final res = Process.runSync('/bin/ps', const [
-        '-axo',
-        'pid=,ppid=,pgid=,sess=,uid=,lstart=,comm=,args=',
-      ], stdoutEncoding: const Utf8Codec(allowMalformed: true));
+      final res = Process.runSync(
+        '/bin/ps',
+        const ['-axo', 'pid=,ppid=,pgid=,sess=,uid=,lstart=,comm=,args='],
+        environment: macosCommandCEnv(),
+        stdoutEncoding: const Utf8Codec(allowMalformed: true),
+      );
       if (res.exitCode == 0) {
         _psCache = parseMacosPs(res.stdout as String);
         _psCacheAt = now;
@@ -283,6 +294,82 @@ List<MacosProcess> macosProcesses({bool fresh = false, int? onlyUid}) {
     for (final proc in _psCache)
       if (proc.uid == onlyUid) proc,
   ];
+}
+
+/// Parses BSD/macOS `/bin/ps -o time=` cumulative CPU time token
+/// (`[dd-]hh:mm:ss[.ff]` or `mm:ss[.ff]`, e.g. `0:03.42`, `125:04.12`,
+/// `1:02:03.45`, `2-03:04:05.67`) into seconds, or null if malformed.
+double? parseMacosPsCpuSeconds(String timeText) {
+  var s = timeText.trim();
+  if (s.isEmpty) return null;
+  var days = 0;
+  final dash = s.indexOf('-');
+  if (dash > 0) {
+    final parsedDays = int.tryParse(s.substring(0, dash));
+    if (parsedDays == null || parsedDays < 0) return null;
+    days = parsedDays;
+    s = s.substring(dash + 1);
+  }
+  final parts = s.split(':');
+  if (parts.length != 2 && parts.length != 3) return null;
+  int hours = 0;
+  int minutes;
+  double seconds;
+  if (parts.length == 3) {
+    final h = int.tryParse(parts[0]);
+    final m = int.tryParse(parts[1]);
+    final sec = double.tryParse(parts[2]);
+    if (h == null || m == null || sec == null || h < 0 || m < 0 || sec < 0) {
+      return null;
+    }
+    hours = h;
+    minutes = m;
+    seconds = sec;
+  } else {
+    if (days > 0) return null;
+    final m = int.tryParse(parts[0]);
+    final sec = double.tryParse(parts[1]);
+    if (m == null || sec == null || m < 0 || sec < 0) return null;
+    minutes = m;
+    seconds = sec;
+  }
+  return ((days * 24 + hours) * 3600) + (minutes * 60) + seconds;
+}
+
+/// Parses `/bin/ps -o pid=,time= -p ...` output into `pid -> cumulative CPU seconds`.
+Map<int, double> parseMacosPsCpuTimes(String output) {
+  final out = <int, double>{};
+  final lineRe = RegExp(r'^\s*(\d+)\s+(\S+)\s*$');
+  for (final line in const LineSplitter().convert(output)) {
+    final m = lineRe.firstMatch(line);
+    if (m == null) continue;
+    final pid = int.tryParse(m.group(1)!);
+    final secs = parseMacosPsCpuSeconds(m.group(2)!);
+    if (pid != null && secs != null) {
+      out[pid] = secs;
+    }
+  }
+  return out;
+}
+
+/// Reads cumulative CPU seconds for [pids] on macOS via `/bin/ps -o pid=,time=`.
+Map<int, double> macosProcessCpuSeconds(Iterable<int> pids) {
+  final valid = [
+    for (final pid in pids)
+      if (pid > 0) pid,
+  ];
+  if (valid.isEmpty) return const {};
+  try {
+    final res = Process.runSync(
+      '/bin/ps',
+      ['-o', 'pid=,time=', '-p', valid.join(',')],
+      environment: macosCommandCEnv(),
+      stdoutEncoding: const Utf8Codec(allowMalformed: true),
+    );
+    return parseMacosPsCpuTimes(res.stdout as String? ?? '');
+  } on ProcessException {
+    return const {};
+  }
 }
 
 /// Reads environment keys in [allowed] for an own-UID process on macOS via
@@ -301,13 +388,12 @@ Map<String, String> macosProcessEnv(
     final proc = macosProcesses().where((p) => p.pid == pid).firstOrNull;
     if (proc != null && proc.uid != ownUid) return const {};
     try {
-      final res = Process.runSync('/bin/ps', [
-        'eww',
-        '-p',
-        '$pid',
-        '-o',
-        'command=',
-      ], stdoutEncoding: const Utf8Codec(allowMalformed: true));
+      final res = Process.runSync(
+        '/bin/ps',
+        ['eww', '-p', '$pid', '-o', 'command='],
+        environment: macosCommandCEnv(),
+        stdoutEncoding: const Utf8Codec(allowMalformed: true),
+      );
       if (res.exitCode != 0) return const {};
       text = res.stdout as String;
     } on ProcessException {
@@ -336,14 +422,12 @@ String macosProcessCwd(int pid, int ownUid, {String? lsofOutput}) {
     final proc = macosProcesses().where((p) => p.pid == pid).firstOrNull;
     if (proc == null || proc.uid != ownUid) return '';
     try {
-      final res = Process.runSync('/usr/sbin/lsof', [
-        '-a',
-        '-p',
-        '$pid',
-        '-d',
-        'cwd',
-        '-Fn',
-      ], stdoutEncoding: const Utf8Codec(allowMalformed: true));
+      final res = Process.runSync(
+        '/usr/sbin/lsof',
+        ['-a', '-p', '$pid', '-d', 'cwd', '-Fn'],
+        environment: macosCommandCEnv(),
+        stdoutEncoding: const Utf8Codec(allowMalformed: true),
+      );
       if (res.exitCode != 0) return '';
       text = res.stdout as String;
     } on ProcessException {
@@ -366,12 +450,12 @@ List<String> macosProcessOpenFiles(int pid, int ownUid, {String? lsofOutput}) {
     final proc = macosProcesses().where((p) => p.pid == pid).firstOrNull;
     if (proc == null || proc.uid != ownUid) return const [];
     try {
-      final res = Process.runSync('/usr/sbin/lsof', [
-        '-nP',
-        '-p',
-        '$pid',
-        '-Fn',
-      ], stdoutEncoding: const Utf8Codec(allowMalformed: true));
+      final res = Process.runSync(
+        '/usr/sbin/lsof',
+        ['-nP', '-p', '$pid', '-Fn'],
+        environment: macosCommandCEnv(),
+        stdoutEncoding: const Utf8Codec(allowMalformed: true),
+      );
       if (res.exitCode != 0) return const [];
       text = res.stdout as String;
     } on ProcessException {
@@ -384,24 +468,30 @@ List<String> macosProcessOpenFiles(int pid, int ownUid, {String? lsofOutput}) {
   ];
 }
 
-bool _isLoopbackListenHost(String host) {
+enum _ListenKind { wildcard, ipv4Loopback, ipv6Loopback, other }
+
+_ListenKind _classifyListenHost(String host) {
   final h = host.toLowerCase();
-  return h == '*' ||
-      h == '0.0.0.0' ||
-      h.startsWith('127.') ||
-      h == '[::]' ||
-      h == '::' ||
-      h == '[::1]' ||
-      h == '::1' ||
+  if (h == '*' || h == '0.0.0.0' || h == '[::]' || h == '::') {
+    return _ListenKind.wildcard;
+  }
+  if (h.startsWith('127.') ||
       h.startsWith('[::ffff:127.') ||
-      h.startsWith('::ffff:127.');
+      h.startsWith('::ffff:127.')) {
+    return _ListenKind.ipv4Loopback;
+  }
+  if (h == '[::1]' || h == '::1') {
+    return _ListenKind.ipv6Loopback;
+  }
+  return _ListenKind.other;
 }
 
-/// Parses `/usr/sbin/lsof -nP -iTCP -sTCP:LISTEN -F pun` output and returns the
-/// owner UIDs of all loopback-reachable TCP sockets listening on [port].
-List<int> parseMacosLsofListeners(String output, int port) {
+List<({int uid, _ListenKind kind})> _parseLsofLoopbackEndpoints(
+  String output,
+  int port,
+) {
   if (port <= 0 || port >= 65536) return const [];
-  final owners = <int>[];
+  final endpoints = <({int uid, _ListenKind kind})>[];
   int? currentUid;
   for (final line in const LineSplitter().convert(output)) {
     if (line.isEmpty) continue;
@@ -418,40 +508,69 @@ List<int> parseMacosLsofListeners(String output, int port) {
       if (colon <= 0) continue;
       final parsedPort = int.tryParse(value.substring(colon + 1));
       if (parsedPort != port) continue;
-      final host = value.substring(0, colon);
-      if (_isLoopbackListenHost(host)) {
-        owners.add(currentUid);
+      final kind = _classifyListenHost(value.substring(0, colon));
+      if (kind != _ListenKind.other) {
+        endpoints.add((uid: currentUid, kind: kind));
       }
     }
   }
-  return owners;
+  return endpoints;
 }
 
-/// Returns owner UIDs of loopback-reachable TCP listeners on [port] on macOS.
-List<int> macosLoopbackListeners(int port) {
-  if (port <= 0 || port >= 65536) return const [];
+/// Parses `/usr/sbin/lsof -nP -iTCP -sTCP:LISTEN -F pun` output and returns the
+/// owner UIDs of all loopback-reachable TCP sockets listening on [port].
+List<int> parseMacosLsofListeners(String output, int port) => [
+  for (final ep in _parseLsofLoopbackEndpoints(output, port)) ep.uid,
+];
+
+String _runLsofListenersRaw() {
   try {
-    final res = Process.runSync('/usr/sbin/lsof', const [
-      '-nP',
-      '-iTCP',
-      '-sTCP:LISTEN',
-      '-F',
-      'pun',
-    ], stdoutEncoding: const Utf8Codec(allowMalformed: true));
+    final res = Process.runSync(
+      '/usr/sbin/lsof',
+      const ['-nP', '-iTCP', '-sTCP:LISTEN', '-F', 'pun'],
+      environment: macosCommandCEnv(),
+      stdoutEncoding: const Utf8Codec(allowMalformed: true),
+    );
     // Note: lsof exits with 1 when no files match, so parse stdout regardless.
-    return parseMacosLsofListeners(res.stdout as String? ?? '', port);
+    return res.stdout as String? ?? '';
   } on ProcessException {
-    return const [];
+    return '';
   }
 }
 
-/// Security check: true iff at least one socket listens on [port] and EVERY
-/// loopback-reachable listener on [port] is owned by [uid].
-bool macosOwnPort(int port, int uid, {String? lsofOutput}) {
-  final owners = lsofOutput != null
-      ? parseMacosLsofListeners(lsofOutput, port)
-      : macosLoopbackListeners(port);
-  return owners.isNotEmpty && owners.every((o) => o == uid);
+/// Returns owner UIDs of loopback-reachable TCP listeners on [port] on macOS.
+List<int> macosLoopbackListeners(int port) =>
+    parseMacosLsofListeners(_runLsofListenersRaw(), port);
+
+/// Security check: true iff:
+/// 1. Every loopback-reachable or wildcard listener on [port] belongs to [uid]
+///    (zero foreign UIDs on IPv4 or IPv6 loopback/wildcard), AND
+/// 2. [uid]'s listeners actually cover the target loopback address family:
+///    - default (`localhost: false`, connecting to `127.0.0.1`): [uid] owns a
+///      wildcard (`*`/`0.0.0.0`/`::`) or IPv4 loopback (`127.*`) listener
+///      (so an IPv6-only `[::1]` listener cannot leave `127.0.0.1` uncovered);
+///    - `localhost: true` (connecting to `localhost`, which may resolve to
+///      either `::1` or `127.0.0.1`): [uid] owns either wildcard (`*`) or BOTH
+///      `127.*` and `[::1]`.
+bool macosOwnPort(
+  int port,
+  int uid, {
+  String? lsofOutput,
+  bool localhost = false,
+}) {
+  if (port <= 0 || port >= 65536) return false;
+  final raw = lsofOutput ?? _runLsofListenersRaw();
+  final endpoints = _parseLsofLoopbackEndpoints(raw, port);
+  if (endpoints.isEmpty || endpoints.any((ep) => ep.uid != uid)) {
+    return false;
+  }
+  final hasWildcard = endpoints.any((ep) => ep.kind == _ListenKind.wildcard);
+  final hasV4 = endpoints.any((ep) => ep.kind == _ListenKind.ipv4Loopback);
+  final hasV6 = endpoints.any((ep) => ep.kind == _ListenKind.ipv6Loopback);
+  if (localhost) {
+    return hasWildcard || (hasV4 && hasV6);
+  }
+  return hasWildcard || hasV4;
 }
 
 /// Parses `lsof -nP -iTCP:<port> -sTCP:ESTABLISHED -F pn` to check if an
@@ -491,13 +610,12 @@ bool parseMacosLsofEstablished(String output, int port, Set<int> ignorePids) {
 bool macosPortInUse(int port, Set<int> ignorePids) {
   if (port <= 0 || port >= 65536) return false;
   try {
-    final res = Process.runSync('/usr/sbin/lsof', [
-      '-nP',
-      '-iTCP:$port',
-      '-sTCP:ESTABLISHED',
-      '-F',
-      'pn',
-    ], stdoutEncoding: const Utf8Codec(allowMalformed: true));
+    final res = Process.runSync(
+      '/usr/sbin/lsof',
+      ['-nP', '-iTCP:$port', '-sTCP:ESTABLISHED', '-F', 'pn'],
+      environment: macosCommandCEnv(),
+      stdoutEncoding: const Utf8Codec(allowMalformed: true),
+    );
     return parseMacosLsofEstablished(
       res.stdout as String? ?? '',
       port,
@@ -632,10 +750,12 @@ macosHardwareInfo({bool includeIoreg = false}) {
   }
   String runSysctl(String key) {
     try {
-      final r = Process.runSync('/usr/sbin/sysctl', [
-        '-n',
-        key,
-      ], stdoutEncoding: const Utf8Codec(allowMalformed: true));
+      final r = Process.runSync(
+        '/usr/sbin/sysctl',
+        ['-n', key],
+        environment: macosCommandCEnv(),
+        stdoutEncoding: const Utf8Codec(allowMalformed: true),
+      );
       return r.exitCode == 0 ? (r.stdout as String).trim() : '';
     } on ProcessException {
       return '';
@@ -645,14 +765,12 @@ macosHardwareInfo({bool includeIoreg = false}) {
   var ioreg = '';
   if (includeIoreg) {
     try {
-      final r = Process.runSync('/usr/sbin/ioreg', const [
-        '-a',
-        '-r',
-        '-c',
-        'IOAccelerator',
-        '-d',
-        '1',
-      ], stdoutEncoding: const Utf8Codec(allowMalformed: true));
+      final r = Process.runSync(
+        '/usr/sbin/ioreg',
+        const ['-a', '-r', '-c', 'IOAccelerator', '-d', '1'],
+        environment: macosCommandCEnv(),
+        stdoutEncoding: const Utf8Codec(allowMalformed: true),
+      );
       if (r.exitCode == 0) ioreg = r.stdout as String;
     } on ProcessException {
       ioreg = '';
@@ -722,15 +840,19 @@ List<Map<String, String>> parseMacosDfMounts(
 
 List<Map<String, String>> macosLocalMounts() {
   try {
-    final df = Process.runSync('/bin/df', const [
-      '-Pk',
-    ], stdoutEncoding: const Utf8Codec(allowMalformed: true));
+    final df = Process.runSync(
+      '/bin/df',
+      const ['-Pk'],
+      environment: macosCommandCEnv(),
+      stdoutEncoding: const Utf8Codec(allowMalformed: true),
+    );
     if (df.exitCode != 0) return const [];
     var mountText = '';
     try {
       final m = Process.runSync(
         '/sbin/mount',
         const [],
+        environment: macosCommandCEnv(),
         stdoutEncoding: const Utf8Codec(allowMalformed: true),
       );
       if (m.exitCode == 0) mountText = m.stdout as String;
@@ -852,6 +974,134 @@ parseLaunchAgentPlist(String xml) {
   return (label: label, programArguments: args, environment: env);
 }
 
+/// Parses `KEY=VALUE` lines from a systemd-style `.env` file text, stripping
+/// optional `export ` prefixes and matching outer single/double quotes while
+/// preserving spaces inside values (e.g. `/Volumes/External SSD/models`).
+Map<String, String> parseEnvFileLines(String text) {
+  final out = <String, String>{};
+  for (final raw in const LineSplitter().convert(text)) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty || trimmed.startsWith('#')) continue;
+    final body = trimmed.startsWith('export ')
+        ? trimmed.substring(7).trimLeft()
+        : trimmed;
+    final eq = body.indexOf('=');
+    if (eq <= 0) continue;
+    final key = body.substring(0, eq).trim();
+    if (!RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(key)) continue;
+    var val = body.substring(eq + 1).trim();
+    if (val.length >= 2 &&
+        ((val.startsWith('"') && val.endsWith('"')) ||
+            (val.startsWith("'") && val.endsWith("'")))) {
+      val = val.substring(1, val.length - 1);
+    }
+    out[key] = val;
+  }
+  return out;
+}
+
+/// POSIX `/bin/sh` wrapper script that reads `KEY=VALUE` lines from `"$1"`
+/// (`server.env`) without `source` / `.` word-splitting or command evaluation,
+/// so unquoted paths with spaces (e.g. `OLLAMA_MODELS=/Volumes/External SSD/models`)
+/// are exported intact before `exec`ing `"$@"`.
+const String macosEnvExecScript =
+    'if [ -r "\$1" ]; then '
+    'while IFS= read -r _line || [ -n "\$_line" ]; do '
+    'case "\$_line" in ""|\\#*) continue ;; esac; '
+    '_line="\${_line#export }"; '
+    'case "\$_line" in [A-Za-z_]*=*) '
+    '_k="\${_line%%=*}"; _v="\${_line#*=}"; '
+    'case "\$_k" in *[!A-Za-z0-9_]*) continue ;; esac; '
+    'case "\$_v" in \\"*\\") _v="\${_v#\\"}"; _v="\${_v%\\"}" ;; '
+    "\\'*\\') _v=\"\${_v#\\'}\"; _v=\"\${_v%\\'}\" ;; esac; "
+    'export "\$_k=\$_v" ;; esac; '
+    'done < "\$1"; '
+    'fi; shift; exec "\$@"';
+
+/// Builds `ProgramArguments` that safely load [envFile] line-by-line and `exec`
+/// [commandArgs] without a lingering shell process or word-splitting on spaces.
+List<String> buildMacosEnvFileExecArgs(
+  String envFile,
+  List<String> commandArgs,
+) => ['/bin/sh', '-c', macosEnvExecScript, 'sh', envFile, ...commandArgs];
+
+/// Locates the LaunchAgent `.plist` file in `~/Library/LaunchAgents` for [label]
+/// (checking `<label>.plist`, `com.maprisma.<label>.plist`, and scanning plist
+/// `<key>Label</key>` values when filenames differ).
+String? resolveLaunchAgentPlist(String home, String label) {
+  if (home.isEmpty || label.isEmpty) return null;
+  final dir = p.join(home, 'Library', 'LaunchAgents');
+  for (final candidate in [
+    p.join(dir, '$label.plist'),
+    if (!label.startsWith('com.maprisma.'))
+      p.join(dir, 'com.maprisma.$label.plist'),
+  ]) {
+    if (File(candidate).existsSync()) return candidate;
+  }
+  try {
+    final entries =
+        Directory(dir)
+            .listSync(followLinks: false)
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.plist'))
+            .toList()
+          ..sort((a, b) => a.path.compareTo(b.path));
+    for (final file in entries.take(200)) {
+      if (file.lengthSync() > 256 * 1024) continue;
+      final parsed = parseLaunchAgentPlist(file.readAsStringSync());
+      if (parsed.label == label) return file.path;
+    }
+  } on FileSystemException {
+    // LaunchAgents directory may not exist yet.
+  }
+  return null;
+}
+
+/// Starts or stops a LaunchAgent [service] in `gui/<uid>` properly handling
+/// `KeepAlive=true` jobs:
+/// - `stop`: runs `launchctl bootout gui/<uid>/<service>` (falling back to
+///   `launchctl bootout gui/<uid> <plistPath>`) so `launchd` unloads the job
+///   instead of immediately respawning it as `launchctl stop` would;
+/// - `start`: checks `launchctl print gui/<uid>/<service>` first, runs
+///   `launchctl bootstrap gui/<uid> <plistPath>` when unloaded, then runs
+///   `launchctl kickstart -k gui/<uid>/<service>`.
+Future<(bool, String)> macosLaunchctlControl({
+  required String service,
+  required String action,
+  required int uid,
+  required String home,
+  required Future<(bool, String)> Function(List<String> argv) run,
+  String? plistOverride,
+}) async {
+  final domain = 'gui/$uid';
+  final target = '$domain/$service';
+  String? plistPath() =>
+      plistOverride ?? resolveLaunchAgentPlist(home, service);
+
+  if (action == 'stop') {
+    final first = await run(['/bin/launchctl', 'bootout', target]);
+    if (first.$1) return first;
+    final plist = plistPath();
+    if (plist != null && File(plist).existsSync()) {
+      return run(['/bin/launchctl', 'bootout', domain, plist]);
+    }
+    return first;
+  }
+
+  if (action == 'start') {
+    final (loaded, _) = await run(['/bin/launchctl', 'print', target]);
+    if (!loaded) {
+      final plist = plistPath();
+      if (plist != null && File(plist).existsSync()) {
+        await run(['/bin/launchctl', 'bootstrap', domain, plist]);
+      }
+    }
+    return run(['/bin/launchctl', 'kickstart', '-k', target]);
+  }
+
+  return (false, 'unsupported launchctl action: $action');
+}
+
 /// Homebrew install commands for local runtimes and developer tools on macOS.
 List<String>? macosBrewInstallCommand(String key) => switch (key) {
   'llamacpp' ||
@@ -902,7 +1152,9 @@ List<String> buildMacosOsascriptTerminalArgs(
       '-e',
       'activate',
       '-e',
-      'create window with default profile command (item 1 of argv)',
+      'create window with default profile',
+      '-e',
+      'tell current session of current window to write text (item 1 of argv)',
       '-e',
       'end tell',
       '-e',

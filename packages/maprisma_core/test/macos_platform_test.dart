@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:maprisma_core/maprisma_core.dart';
 import 'package:maprisma_core/src/desktop_palette.dart' show macosFonts;
+import 'package:maprisma_core/src/installers.dart'
+    show Gpu, InstallHost, LlamaCppInstaller, OllamaInstaller;
 import 'package:maprisma_core/src/skill_plans.dart' show AgentProfiles;
 import 'package:test/test.dart';
 
@@ -429,7 +431,244 @@ Filesystem     1024-blocks      Used Available Capacity Mounted on
         expect(termFallback, isNotNull);
         expect(termFallback!.first, '/usr/bin/osascript');
         expect(termFallback.last, 'cd -- /Users/uwe/work && gemini');
+
+        // iTerm2 AppleScript uses `create window with default profile` +
+        // `write text (item 1 of argv)` so `cd ... && ...` runs in a shell:
+        final itermArgs = buildMacosOsascriptTerminalArgs(
+          ['claude'],
+          '/Users/uwe/My Repo',
+          app: 'iTerm',
+        );
+        expect(itermArgs, contains('create window with default profile'));
+        expect(
+          itermArgs,
+          contains(
+            'tell current session of current window to write text (item 1 of argv)',
+          ),
+        );
+        expect(
+          itermArgs.any((s) => s.contains('default profile command')),
+          isFalse,
+        );
       },
     );
+
+    test(
+      'C-locale environment override prevents German/non-English ps lstart failures',
+      () {
+        final env = macosCommandCEnv({
+          'HOME': '/Users/uwe',
+          'PATH': '/usr/bin:/bin',
+          'LANG': 'de_DE.UTF-8',
+          'LC_ALL': 'de_DE.UTF-8',
+          'LC_TIME': 'de_DE.UTF-8',
+        });
+        expect(env['LC_ALL'], 'C');
+        expect(env['LANG'], 'C');
+        expect(env['PATH'], '/usr/bin:/bin');
+
+        final dateRes = Process.runSync('/bin/sh', const [
+          '-c',
+          'date "+%a %b"',
+        ], environment: env);
+        expect(dateRes.exitCode, 0);
+        expect(
+          (dateRes.stdout as String).trim(),
+          matches(
+            RegExp(
+              r'^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$',
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'LaunchAgent server.env loader preserves spaces in model paths without shell word-splitting',
+      () async {
+        final tmp = Directory.systemTemp.createTempSync('maprisma-env-space-');
+        addTearDown(() => tmp.deleteSync(recursive: true));
+
+        const spacedModels = '/Volumes/External SSD/AI Models/Ollama Store';
+        final host = InstallHost(tmp.path, Posix());
+        final ollama = OllamaInstaller(host);
+        final llama = LlamaCppInstaller(host);
+        final envContent = ollama.envText(spacedModels, Gpu());
+        final envFile = File('${tmp.path}/server.env')
+          ..writeAsStringSync(envContent);
+
+        // Plist EnvironmentVariables dictionary holds the unsplit path:
+        final plistXml = ollama.plistText(spacedModels, Gpu());
+        final parsedPlist = parseLaunchAgentPlist(plistXml);
+        expect(parsedPlist.environment['OLLAMA_MODELS'], spacedModels);
+
+        final llamaPlist = parseLaunchAgentPlist(
+          llama.plistText('/Volumes/External SSD/GGUF Models', Gpu()),
+        );
+        expect(
+          llamaPlist.environment['LLAMA_ARG_MODELS_DIR'],
+          '/Volumes/External SSD/GGUF Models',
+        );
+
+        // Executing the LaunchAgent ProgramArguments with a later-edited
+        // server.env containing spaces exports the exact path without splitting:
+        envFile.writeAsStringSync(
+          '# edited later\n'
+          'OLLAMA_MODELS=/Volumes/Second Drive/With Spaces/models\n'
+          'OLLAMA_HOST=127.0.0.1:11434\n',
+        );
+        final execArgs = buildMacosEnvFileExecArgs(envFile.path, [
+          '/bin/sh',
+          '-c',
+          'printf "%s" "\$OLLAMA_MODELS"',
+        ]);
+        final runRes = await Process.run(execArgs.first, execArgs.sublist(1));
+        expect(runRes.exitCode, 0, reason: '${runRes.stderr}');
+        expect(runRes.stdout, '/Volumes/Second Drive/With Spaces/models');
+      },
+    );
+
+    test(
+      'macosLaunchctlControl uses bootout for KeepAlive stop and print+bootstrap before kickstart',
+      () async {
+        final tmp = Directory.systemTemp.createTempSync('maprisma-launchctl-');
+        addTearDown(() => tmp.deleteSync(recursive: true));
+        final plist =
+            File('${tmp.path}/Library/LaunchAgents/com.maprisma.ollama.plist')
+              ..parent.createSync(recursive: true)
+              ..writeAsStringSync(
+                buildLaunchAgentPlist(
+                  label: 'com.maprisma.ollama',
+                  programArguments: ['/Users/uwe/.local/bin/ollama', 'serve'],
+                ),
+              );
+
+        // 1. Stop: bootout service target fails -> falls back to bootout plist path (never `launchctl stop`).
+        final calls = <List<String>>[];
+        final stopRes = await macosLaunchctlControl(
+          service: 'com.maprisma.ollama',
+          action: 'stop',
+          uid: 501,
+          home: tmp.path,
+          run: (argv) async {
+            calls.add(argv);
+            if (argv.length == 3 && argv[1] == 'bootout') {
+              return (false, 'Could not find specified service');
+            }
+            return (true, '');
+          },
+        );
+        expect(stopRes.$1, isTrue);
+        expect(
+          calls,
+          equals([
+            ['/bin/launchctl', 'bootout', 'gui/501/com.maprisma.ollama'],
+            ['/bin/launchctl', 'bootout', 'gui/501', plist.path],
+          ]),
+        );
+
+        // 2. Start when unloaded: print fails -> bootstrap plist -> kickstart -k.
+        calls.clear();
+        final startUnloaded = await macosLaunchctlControl(
+          service: 'com.maprisma.ollama',
+          action: 'start',
+          uid: 501,
+          home: tmp.path,
+          run: (argv) async {
+            calls.add(argv);
+            if (argv[1] == 'print') return (false, 'not loaded');
+            return (true, '');
+          },
+        );
+        expect(startUnloaded.$1, isTrue);
+        expect(
+          calls,
+          equals([
+            ['/bin/launchctl', 'print', 'gui/501/com.maprisma.ollama'],
+            ['/bin/launchctl', 'bootstrap', 'gui/501', plist.path],
+            [
+              '/bin/launchctl',
+              'kickstart',
+              '-k',
+              'gui/501/com.maprisma.ollama',
+            ],
+          ]),
+        );
+
+        // 3. Start when already loaded: print succeeds -> kickstart -k directly.
+        calls.clear();
+        final startLoaded = await macosLaunchctlControl(
+          service: 'com.maprisma.ollama',
+          action: 'start',
+          uid: 501,
+          home: tmp.path,
+          run: (argv) async {
+            calls.add(argv);
+            return (true, '');
+          },
+        );
+        expect(startLoaded.$1, isTrue);
+        expect(
+          calls,
+          equals([
+            ['/bin/launchctl', 'print', 'gui/501/com.maprisma.ollama'],
+            [
+              '/bin/launchctl',
+              'kickstart',
+              '-k',
+              'gui/501/com.maprisma.ollama',
+            ],
+          ]),
+        );
+      },
+    );
+
+    test('parses macOS ps -o time= cumulative CPU durations into seconds', () {
+      expect(parseMacosPsCpuSeconds('0:03.42'), closeTo(3.42, 1e-6));
+      expect(parseMacosPsCpuSeconds('125:04.12'), closeTo(7504.12, 1e-6));
+      expect(parseMacosPsCpuSeconds('1:02:03.45'), closeTo(3723.45, 1e-6));
+      expect(parseMacosPsCpuSeconds('2-03:04:05.50'), closeTo(183845.50, 1e-6));
+      expect(parseMacosPsCpuSeconds('bad'), isNull);
+
+      final table = parseMacosPsCpuTimes(
+        '  4201   0:12.50\n  4202 1:00:00.00\n',
+      );
+      expect(table[4201], closeTo(12.5, 1e-6));
+      expect(table[4202], closeTo(3600.0, 1e-6));
+    });
+
+    test('macosOwnPort enforces IPv4 and localhost loopback family coverage', () {
+      // IPv6-only `[::1]` listener leaves 127.0.0.1 uncovered -> must be rejected!
+      const v6Only = 'p100\nu501\nn[::1]:8080\n';
+      expect(macosOwnPort(8080, 501, lsofOutput: v6Only), isFalse);
+      expect(
+        macosOwnPort(8080, 501, lsofOutput: v6Only, localhost: true),
+        isFalse,
+      );
+
+      // IPv4-only `127.0.0.1` listener covers 127.0.0.1, but not `localhost` dual-family:
+      const v4Only = 'p100\nu501\nn127.0.0.1:8080\n';
+      expect(macosOwnPort(8080, 501, lsofOutput: v4Only), isTrue);
+      expect(
+        macosOwnPort(8080, 501, lsofOutput: v4Only, localhost: true),
+        isFalse,
+      );
+
+      // Wildcard `*` owned solely by 501 covers both:
+      const wildcardOwn = 'p100\nu501\nn*:8080\n';
+      expect(macosOwnPort(8080, 501, lsofOutput: wildcardOwn), isTrue);
+      expect(
+        macosOwnPort(8080, 501, lsofOutput: wildcardOwn, localhost: true),
+        isTrue,
+      );
+
+      // Both 127.0.0.1 and [::1] owned by 501 covers both:
+      const bothOwn = 'p100\nu501\nn127.0.0.1:8080\nn[::1]:8080\n';
+      expect(macosOwnPort(8080, 501, lsofOutput: bothOwn), isTrue);
+      expect(
+        macosOwnPort(8080, 501, lsofOutput: bothOwn, localhost: true),
+        isTrue,
+      );
+    });
   });
 }

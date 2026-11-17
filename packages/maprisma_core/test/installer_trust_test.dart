@@ -96,4 +96,71 @@ void main() {
       throwsStateError,
     );
   });
+
+  test(
+    'O_CLOEXEC verified descriptors unpack archives and run install.sh across exec via staged private copy',
+    () async {
+      // 1. Archive extraction across exec (`tar -x -f ...`) after name swap:
+      final srcDir = Directory('${root.path}/src')..createSync();
+      File('${srcDir.path}/ollama').writeAsStringSync('#!/bin/sh\necho ok\n');
+      chmod('${srcDir.path}/ollama', '755');
+      final archive = File('${root.path}/ollama-darwin.tgz');
+      final tarRes = Process.runSync('tar', [
+        '-czf',
+        archive.path,
+        '-C',
+        srcDir.path,
+        'ollama',
+      ]);
+      expect(tarRes.exitCode, 0);
+      final tarDigest = sha256.convert(archive.readAsBytesSync()).toString();
+      final tarFd = openVerified(ModelFiles(posix), archive.path, tarDigest);
+      String? stagedSeen;
+      try {
+        // Swap the filename on disk before unpacking:
+        File('${root.path}/tampered.tgz')
+          ..writeAsStringSync('corrupted')
+          ..renameSync(archive.path);
+        final outDir = '${root.path}/unpacked';
+        await withVerifiedFdPath(posix, tarFd, 'ollama-darwin.tgz', (
+          verifiedPath,
+        ) async {
+          stagedSeen = verifiedPath;
+          final st = posix.lstatOwn(verifiedPath)!;
+          expect(st.mode & 0x1ff, 0x180); // 0600
+          final dirSt = posix.lstatOwn(File(verifiedPath).parent.path)!;
+          expect(dirSt.mode & 0x1ff, 0x1c0); // 0700
+          await extract(verifiedPath, outDir, name: 'ollama-darwin.tgz');
+        }, stageCopy: true);
+        expect(
+          File('$outDir/ollama').readAsStringSync(),
+          '#!/bin/sh\necho ok\n',
+        );
+        expect(Directory(File(stagedSeen!).parent.path).existsSync(), isFalse);
+      } finally {
+        posix.close(tarFd);
+      }
+
+      // 2. Strata `sh <verifiedPath>` across exec after name swap:
+      final script = File('${root.path}/install.sh')
+        ..writeAsStringSync('#!/bin/sh\necho "verified-strata"\n');
+      final shDigest = sha256.convert(script.readAsBytesSync()).toString();
+      final shFd = openVerified(ModelFiles(posix), script.path, shDigest);
+      try {
+        File('${root.path}/evil.sh')
+          ..writeAsStringSync('#!/bin/sh\necho "pwned"\n')
+          ..renameSync(script.path);
+        final output = await withVerifiedFdPath(posix, shFd, 'install.sh', (
+          verifiedPath,
+        ) async {
+          final r = await Process.run('sh', [verifiedPath]);
+          expect(r.exitCode, 0);
+          return (r.stdout as String).trim();
+        }, stageCopy: true);
+        expect(output, 'verified-strata');
+      } finally {
+        posix.close(shFd);
+      }
+    },
+  );
 }

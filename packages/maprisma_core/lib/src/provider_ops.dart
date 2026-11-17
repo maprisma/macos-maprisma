@@ -4,7 +4,8 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'adapter_assets.g.dart';
 import 'installers.dart' show InstallHost, KoboldCppInstaller;
-import 'macos_platform.dart' show macosLoopbackListeners, macosOwnPort;
+import 'macos_platform.dart'
+    show macosLaunchctlControl, macosLoopbackListeners, macosOwnPort;
 import 'strata.dart';
 import 'model_downloads.dart';
 import 'model_hub.dart';
@@ -274,24 +275,13 @@ final class ProviderOps {
 
   Future<(bool, String)> _systemctl(String verb, RuntimeRecord rt) async {
     if (Platform.isMacOS) {
-      final plist = files.expand('~/Library/LaunchAgents/${rt.service}.plist');
-      if (verb == 'start') {
-        if (File(plist).existsSync()) {
-          await runCommand(['/bin/launchctl', 'bootstrap', 'gui/$uid', plist]);
-        }
-        return runCommand([
-          '/bin/launchctl',
-          'kickstart',
-          '-k',
-          'gui/$uid/${rt.service}',
-        ]);
-      }
-      if (verb == 'stop') {
-        if (File(plist).existsSync()) {
-          return runCommand(['/bin/launchctl', 'bootout', 'gui/$uid', plist]);
-        }
-        return runCommand(['/bin/launchctl', 'stop', rt.service]);
-      }
+      return macosLaunchctlControl(
+        service: rt.service,
+        action: verb,
+        uid: uid,
+        home: files.identity.home,
+        run: runCommand,
+      );
     }
     return runCommand(['systemctl', '--user', verb, '${rt.service}.service']);
   }
