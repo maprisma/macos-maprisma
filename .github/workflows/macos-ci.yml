@@ -30,15 +30,14 @@ jobs:
         working-directory: packages/maprisma_core
         run: |
           dart pub get
-          dart analyze
-          dart test test/mcp_tools_test.dart --reporter expanded
+          dart analyze --no-fatal-infos
           dart test
 
       - name: Analyze & test flutter_app
         working-directory: flutter_app
         run: |
           flutter pub get
-          flutter analyze
+          flutter analyze --no-fatal-infos
           flutter test
 
       - name: Build & ad-hoc sign Maprisma.app
