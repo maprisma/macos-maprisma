@@ -1036,10 +1036,13 @@ final class DictationService {
     String? stdinText,
     Duration timeout = const Duration(seconds: 60),
   }) async {
+    final resolved = executable.contains('/')
+        ? executable
+        : (_which(executable) ?? executable);
     Process process;
     try {
       process = await Process.start(
-        executable,
+        resolved,
         args,
         environment: identity.environment,
       );

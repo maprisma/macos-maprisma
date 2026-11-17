@@ -349,7 +349,13 @@ final class PtySessions {
           _ptsname(master, name, 256) != 0) {
         throw const FileSystemException('No terminal available');
       }
-      _setSize(master, 24, 80);
+      // On Darwin XNU, TIOCSWINSZ on the master pty returns EINVAL until the
+      // slave device (/dev/ttysNNN) has been opened. Holding the slave open
+      // with O_NOCTTY | O_CLOEXEC across _setSize and posix_spawn sets 24x80
+      // before the child starts and closes cleanly afterwards.
+      final int? slave = Platform.isMacOS
+          ? _posix.openAt(Posix.atFdCwd, name.toDartString(), _oRdwr | _oNoctty)
+          : null;
       final actions = arena<Uint8>(512).cast<Void>();
       final attr = arena<Uint8>(1024).cast<Void>();
       final all = arena<Uint8>(256).cast<Void>(),
@@ -357,6 +363,7 @@ final class PtySessions {
       _faInit(actions);
       _attrInit(attr);
       try {
+        _setSize(slave ?? master, 24, 80);
         _sigFill(all);
         _sigEmpty(none);
         final spawnFlags =
@@ -408,6 +415,7 @@ final class PtySessions {
         _rememberGroup(session);
         return ident;
       } finally {
+        if (slave != null) _close(slave);
         _faDestroy(actions);
         _attrDestroy(attr);
       }

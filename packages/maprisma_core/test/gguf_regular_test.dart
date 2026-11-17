@@ -11,7 +11,8 @@ void main() {
   late Directory dir;
   late ScanFiles files;
   setUp(() {
-    dir = Directory.systemTemp.createTempSync('maprisma-gguf-');
+    final rawDir = Directory.systemTemp.createTempSync('maprisma-gguf-');
+    dir = Directory(rawDir.resolveSymbolicLinksSync());
     files = ScanFiles(
       AppIdentity(environment: {'HOME': dir.path, 'PATH': '/usr/bin'}),
     );

@@ -53,7 +53,8 @@ void main() {
   var memoryRunFails = false;
 
   setUp(() {
-    root = Directory.systemTemp.createTempSync('llama-tune-');
+    final rawRoot = Directory.systemTemp.createTempSync('llama-tune-');
+    root = Directory(rawRoot.resolveSymbolicLinksSync());
     Directory('${root.path}/llama').createSync();
     binary = '${root.path}/llama/llama-server';
     File(binary).writeAsStringSync('');

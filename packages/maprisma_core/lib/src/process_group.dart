@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'desktop.dart' show whichIn;
 import 'posix_ffi.dart';
 import 'pty_sessions.dart' show groupMembers, processIdentity;
 
@@ -15,7 +16,7 @@ import 'pty_sessions.dart' show groupMembers, processIdentity;
 /// found later is only taken when its start time is not older than the
 /// leader's, so a process that reused a number is never signalled.
 /// Starts [argv] in a session of its own (`setsid -- ...` on Linux; `setsid()`
-/// + `execvp` without a shell on macOS) so `ProcessGroup(process.pid)` can
+/// + `execv` without a shell on macOS) so `ProcessGroup(process.pid)` can
 /// track and terminate the leader and every descendant in its process group.
 Future<Process> startInNewSession(
   List<String> argv, {
@@ -23,25 +24,32 @@ Future<Process> startInNewSession(
   Map<String, String>? environment,
   bool includeParentEnvironment = true,
 }) {
-  if (Platform.isMacOS && File('/usr/bin/perl').existsSync()) {
-    return Process.start(
-      '/usr/bin/perl',
-      [
-        '-MPOSIX=setsid',
-        '-e',
-        r'setsid(); exec {$ARGV[0]} @ARGV; exit 127',
-        '--',
-        ...argv,
-      ],
-      workingDirectory: workingDirectory,
-      environment: environment,
-      includeParentEnvironment: includeParentEnvironment,
-    );
-  }
   if (Platform.isMacOS) {
+    final searchPath =
+        environment?['PATH'] ??
+        (includeParentEnvironment ? Platform.environment['PATH'] : null);
+    final prog = argv.first.contains('/')
+        ? argv.first
+        : (whichIn(argv.first, searchPath) ?? argv.first);
+    final resolved = [prog, ...argv.skip(1)];
+    if (File('/usr/bin/perl').existsSync()) {
+      return Process.start(
+        '/usr/bin/perl',
+        [
+          '-MPOSIX=setsid',
+          '-e',
+          r'setsid(); exec {$ARGV[0]} @ARGV; exit 127',
+          '--',
+          ...resolved,
+        ],
+        workingDirectory: workingDirectory,
+        environment: environment,
+        includeParentEnvironment: includeParentEnvironment,
+      );
+    }
     return Process.start(
-      argv.first,
-      argv.skip(1).toList(),
+      resolved.first,
+      resolved.skip(1).toList(),
       workingDirectory: workingDirectory,
       environment: environment,
       includeParentEnvironment: includeParentEnvironment,

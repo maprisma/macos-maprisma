@@ -720,8 +720,15 @@ void main() {
         'monospace-font-name) echo "\'Hack, 10.5\'";; esac\n',
       );
       Process.runSync('chmod', ['755', '${bin.path}/gsettings']);
-      final timeout = whichIn('timeout', Platform.environment['PATH'])!;
-      Link('${bin.path}/timeout').createSync(timeout);
+      final timeout = whichIn('timeout', Platform.environment['PATH']);
+      if (timeout != null) {
+        Link('${bin.path}/timeout').createSync(timeout);
+      } else {
+        File(
+          '${bin.path}/timeout',
+        ).writeAsStringSync('#!/bin/sh\nshift\nexec "\$@"\n');
+        Process.runSync('chmod', ['755', '${bin.path}/timeout']);
+      }
       final core = CoreService(
         environment: {
           'HOME': temp.path,

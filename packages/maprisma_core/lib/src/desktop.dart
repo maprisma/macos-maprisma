@@ -153,25 +153,13 @@ String installCommand(String desktop, String package, String? searchPath) {
 /// A document opened in the desktop's default viewer (open on macOS, xdg-open
 /// on Linux; a process of its own, no shell).
 bool openDocument(String path, String? searchPath) {
-  if (Platform.isMacOS) {
-    final opener = File('/usr/bin/open').existsSync()
-        ? '/usr/bin/open'
-        : whichIn('open', searchPath);
-    return opener != null && _detached([opener, path], p.dirname(path));
-  }
-  final opener = whichIn('xdg-open', searchPath);
+  final opener = whichIn(Platform.isMacOS ? 'open' : 'xdg-open', searchPath);
   return opener != null && _detached([opener, path], p.dirname(path));
 }
 
 /// A web page (an https link already checked) in the default browser.
 bool openWebPage(String url, String? searchPath, String home) {
-  if (Platform.isMacOS) {
-    final opener = File('/usr/bin/open').existsSync()
-        ? '/usr/bin/open'
-        : whichIn('open', searchPath);
-    return opener != null && _detached([opener, url], home);
-  }
-  final opener = whichIn('xdg-open', searchPath);
+  final opener = whichIn(Platform.isMacOS ? 'open' : 'xdg-open', searchPath);
   return opener != null && _detached([opener, url], home);
 }
 
