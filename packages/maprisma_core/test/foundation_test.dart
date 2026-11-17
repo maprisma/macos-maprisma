@@ -552,10 +552,22 @@ void main() {
   test(
     'pidfd checks start-time and UID and never signals mismatched identity',
     () async {
-      final child = await Process.start('/usr/bin/sleep', ['30']);
+      final child = await Process.start(
+        Platform.isMacOS ? '/bin/sleep' : '/usr/bin/sleep',
+        ['30'],
+      );
       try {
-        final stat = File('/proc/${child.pid}/stat').readAsStringSync();
-        final start = stat.substring(stat.lastIndexOf(')') + 2).split(' ')[19];
+        final String start;
+        if (Platform.isMacOS) {
+          start = macosProcesses(fresh: true)
+              .singleWhere((p) => p.pid == child.pid)
+              .startedEpoch
+              .round()
+              .toString();
+        } else {
+          final stat = File('/proc/${child.pid}/stat').readAsStringSync();
+          start = stat.substring(stat.lastIndexOf(')') + 2).split(' ')[19];
+        }
         final posix = Posix();
         expect(
           posix.signalOwned(

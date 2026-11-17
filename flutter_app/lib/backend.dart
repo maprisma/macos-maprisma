@@ -18,7 +18,12 @@ Map<String, String>? coreEnvironment({
   bool devel = develBuild,
   Map<String, String>? environment,
 }) => devel
-    ? {...(environment ?? Platform.environment), 'MAPRISMA_FLUTTER_DEVEL': '1'}
+    ? {
+        ...(environment ?? Platform.environment),
+        'MAPRISMA_FLUTTER_DEVEL': '1',
+        if (Platform.isMacOS && environment == null)
+          'MAPRISMA_AUGMENT_PATH': '1',
+      }
     : environment;
 
 /// The app's service: the Dart core in a background isolate. Every route is

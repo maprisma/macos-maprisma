@@ -605,7 +605,10 @@ final class DictationService {
   }
 
   String? _recorderBinary() =>
-      _which('pw-record') ?? _which('arecord') ?? _which('ffmpeg');
+      _which('pw-record') ??
+      _which('arecord') ??
+      _which('rec') ??
+      _which('ffmpeg');
 
   void _validateStartParams(Map<String, dynamic> params) {
     if (params.isNotEmpty) {
@@ -738,14 +741,15 @@ final class DictationService {
         'wav',
         wavPath,
       ],
+      'rec' => ['-q', '-r', '16000', '-c', '1', '-b', '16', wavPath],
       _ => [
         '-nostdin',
         '-loglevel',
         'quiet',
         '-f',
-        'pulse',
+        Platform.isMacOS ? 'avfoundation' : 'pulse',
         '-i',
-        'default',
+        Platform.isMacOS ? ':0' : 'default',
         '-ac',
         '1',
         '-ar',
@@ -1463,7 +1467,9 @@ final class DictationService {
           throw ServiceError(
             'action_refused',
             i18n.text(
-              'No AUR helper (yay or paru) was found to install whisper.cpp.',
+              Platform.isMacOS
+                  ? 'Homebrew (brew) was not found to install whisper-cpp.'
+                  : 'No AUR helper (yay or paru) was found to install whisper.cpp.',
             ),
           );
         }
@@ -1487,7 +1493,9 @@ final class DictationService {
           throw ServiceError(
             'action_refused',
             i18n.text(
-              'No AUR helper (yay or paru) was found to install whisper.cpp.',
+              Platform.isMacOS
+                  ? 'Homebrew (brew) was not found to install whisper-cpp.'
+                  : 'No AUR helper (yay or paru) was found to install whisper.cpp.',
             ),
           );
         }
@@ -1498,7 +1506,9 @@ final class DictationService {
           throw ServiceError(
             'action_refused',
             i18n.text(
-              'No AUR helper (yay or paru) was found to install whisper.cpp.',
+              Platform.isMacOS
+                  ? 'Homebrew (brew) was not found to install whisper-cpp.'
+                  : 'No AUR helper (yay or paru) was found to install whisper.cpp.',
             ),
           );
         }

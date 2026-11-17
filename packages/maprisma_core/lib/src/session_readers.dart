@@ -342,9 +342,30 @@ final class SessionReaders {
     ]);
   }
 
+  static DynamicLibrary? _openZstd() {
+    final candidates = Platform.isMacOS
+        ? const [
+            '/opt/homebrew/lib/libzstd.dylib',
+            '/opt/homebrew/opt/zstd/lib/libzstd.1.dylib',
+            '/usr/local/lib/libzstd.dylib',
+            'libzstd.1.dylib',
+            'libzstd.dylib',
+          ]
+        : const ['libzstd.so.1'];
+    for (final name in candidates) {
+      try {
+        return DynamicLibrary.open(name);
+      } on ArgumentError {
+        continue;
+      }
+    }
+    return null;
+  }
+
   List<int>? decompress(List<int> data) {
     if (data.isEmpty) return [];
-    final lib = DynamicLibrary.open('libzstd.so.1');
+    final lib = _openZstd();
+    if (lib == null) return null;
     final size = lib
         .lookupFunction<
           Uint64 Function(Pointer<Uint8>, IntPtr),

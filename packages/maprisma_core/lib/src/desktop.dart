@@ -5,6 +5,11 @@ import 'package:path/path.dart' as p;
 import 'package:toml/toml.dart';
 import 'desktop_palette.dart';
 import 'identity.dart';
+import 'macos_platform.dart'
+    show
+        macosBrewInstallCommand,
+        parseAppleInterfaceStyle,
+        resolveMacosTerminalCommand;
 import 'posix_ffi.dart';
 
 abstract interface class Desktop {
@@ -111,6 +116,12 @@ bool _detached(List<String> argv, String cwd) {
 /// desktop.install_command: the command that installs vte4 or
 /// xdg-terminal-exec here ('' when not known).
 String installCommand(String desktop, String package, String? searchPath) {
+  if (desktop == 'macos') {
+    final brew = macosBrewInstallCommand(package);
+    return brew != null && whichIn('brew', searchPath) != null
+        ? shellJoin(brew)
+        : '';
+  }
   if (desktop == 'omarchy') {
     return const ['vte4', 'xdg-terminal-exec'].contains(package)
         ? 'sudo pacman -S $package'
@@ -138,16 +149,27 @@ String installCommand(String desktop, String package, String? searchPath) {
   return name == null ? '' : manager!.$2.replaceAll('{0}', name);
 }
 
-/// A document opened in the desktop's default viewer (xdg-open, a process
-/// of its own; no shell, no command line built from text). False when there
-/// is no xdg-open.
+/// A document opened in the desktop's default viewer (open on macOS, xdg-open
+/// on Linux; a process of its own, no shell).
 bool openDocument(String path, String? searchPath) {
+  if (Platform.isMacOS) {
+    final opener = File('/usr/bin/open').existsSync()
+        ? '/usr/bin/open'
+        : whichIn('open', searchPath);
+    return opener != null && _detached([opener, path], p.dirname(path));
+  }
   final opener = whichIn('xdg-open', searchPath);
   return opener != null && _detached([opener, path], p.dirname(path));
 }
 
 /// A web page (an https link already checked) in the default browser.
 bool openWebPage(String url, String? searchPath, String home) {
+  if (Platform.isMacOS) {
+    final opener = File('/usr/bin/open').existsSync()
+        ? '/usr/bin/open'
+        : whichIn('open', searchPath);
+    return opener != null && _detached([opener, url], home);
+  }
   final opener = whichIn('xdg-open', searchPath);
   return opener != null && _detached([opener, url], home);
 }
@@ -183,9 +205,13 @@ bool otherSession(Map<String, String> env) {
 Desktop detectDesktop(AppIdentity identity, Posix posix) {
   final env = identity.environment;
   final wanted = env['MAPRISMA_DESKTOP'];
+  if (wanted == 'macos' || (Platform.isMacOS && wanted == null)) {
+    return MacosDesktop(env);
+  }
   final omarchy =
       wanted == 'omarchy' ||
       wanted != 'generic' &&
+          !Platform.isMacOS &&
           !otherSession(env) &&
           Directory(
             env['OMARCHY_PATH']?.isNotEmpty == true
@@ -195,6 +221,66 @@ Desktop detectDesktop(AppIdentity identity, Posix posix) {
   return omarchy
       ? OmarchyDesktop(identity, posix)
       : GenericDesktop(identity.environment);
+}
+
+final class MacosDesktop implements Desktop {
+  MacosDesktop([this.environment = const {}]);
+  final Map<String, String> environment;
+  DateTime? _styleAt;
+  String _style = 'light';
+
+  @override
+  String get name => 'macos';
+
+  @override
+  String? get themeDir => null;
+
+  String _readInterfaceStyle() {
+    final now = DateTime.now();
+    if (_styleAt != null && now.difference(_styleAt!).inSeconds < 15) {
+      return _style;
+    }
+    _styleAt = now;
+    try {
+      final r = Process.runSync('/usr/bin/defaults', const [
+        'read',
+        '-g',
+        'AppleInterfaceStyle',
+      ], stdoutEncoding: const Utf8Codec(allowMalformed: true));
+      _style = parseAppleInterfaceStyle(r.exitCode, r.stdout as String? ?? '');
+    } on ProcessException {
+      _style = 'light';
+    }
+    return _style;
+  }
+
+  @override
+  Map<String, String> themeColors() =>
+      Platform.isMacOS ? macosPalette(_readInterfaceStyle()) : const {};
+
+  @override
+  Map<String, String> fonts() => macosFonts();
+
+  @override
+  bool openTerminal(List<String> argv, String cwd) {
+    final cmd = resolveMacosTerminalCommand(
+      argv,
+      cwd,
+      environment: environment,
+    );
+    return cmd != null && _detached(cmd, cwd);
+  }
+
+  @override
+  bool runStepsInTerminal(List<List<String>> steps, String prompt) {
+    final real = steps.where((s) => s.isNotEmpty).toList();
+    if (real.isEmpty) return false;
+    final script =
+        '${real.map(shellJoin).join(' && ')}; echo; printf %s ${shellQuote(prompt)}; read -r _';
+    final shell = File('/bin/zsh').existsSync() ? '/bin/zsh' : '/bin/bash';
+    final args = shell.endsWith('zsh') ? ['-lc', script] : ['-c', script];
+    return openTerminal([shell, ...args], environment['HOME'] ?? '/');
+  }
 }
 
 final class GenericDesktop implements Desktop {

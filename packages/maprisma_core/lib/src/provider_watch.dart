@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'identity.dart';
+import 'macos_platform.dart'
+    show buildLaunchAgentPlist, macosPortInUse, macosProcesses;
 import 'model_guard.dart' show agentInstances;
 import 'posix_ffi.dart';
 import 'agent_catalog.dart';
@@ -255,8 +257,13 @@ final class WatchSystem {
     return (running, background);
   }
 
-  /// socket_inodes: the sockets these processes hold.
+  bool get _useMacosHost =>
+      Platform.isMacOS &&
+      !files.identity.environment.containsKey('MAPRISMA_SCAN_PROC');
+
+  /// socket_inodes: the sockets these processes hold (on macOS, PIDs as strings).
   Set<String> socketInodes(Set<int> pids) {
+    if (_useMacosHost) return {for (final pid in pids) '$pid'};
     final inodes = <String>{};
     for (final pid in pids) {
       for (final fd in files.list('$proc/$pid/fd', limit: 4096)) {
@@ -277,6 +284,12 @@ final class WatchSystem {
   /// counting the client sockets in `ignore`.
   bool inUse(int port, Set<String> ignore) {
     if (port == 0) return false;
+    if (_useMacosHost) {
+      return macosPortInUse(port, {
+        for (final s in ignore)
+          if (int.tryParse(s) != null) int.parse(s),
+      });
+    }
     for (final name in ['tcp', 'tcp6']) {
       final text = files.text('$proc/net/$name', allowRootOwned: true);
       if (text == null) continue;
@@ -298,6 +311,7 @@ final class WatchSystem {
   }
 
   bool ownListener(int port) {
+    if (_useMacosHost) return ownPort(port, uid);
     final owners = loopbackListeners(port, proc: '$proc/net');
     return owners.isNotEmpty && owners.every((o) => o == uid);
   }
@@ -350,6 +364,12 @@ final class WatchSystem {
   // --- LM Studio's background app ------------------------------------------------------
 
   List<(int, int, List<String>)> ownProcesses() {
+    if (_useMacosHost) {
+      return [
+        for (final proc in macosProcesses(onlyUid: uid))
+          (proc.pid, proc.ppid, proc.argv),
+      ];
+    }
     final found = <(int, int, List<String>)>[];
     for (final path in files.list(proc, limit: 100000, allowRootOwned: true)) {
       final pid = int.tryParse(p.basename(path));
@@ -642,6 +662,17 @@ final class Watcher {
 
   List<String>? command(Map entry, String action) {
     if ('${entry['service'] ?? ''}'.isNotEmpty) {
+      if (Platform.isMacOS) {
+        final uid = Posix().uid;
+        return action == 'start'
+            ? [
+                '/bin/launchctl',
+                'kickstart',
+                '-k',
+                'gui/$uid/${entry['service']}',
+              ]
+            : ['/bin/launchctl', 'stop', '${entry['service']}'];
+      }
       return ['systemctl', '--user', action, '${entry['service']}.service'];
     }
     final lms = lmsBinary();
@@ -810,9 +841,12 @@ final class WatchService {
   List<RuntimeRecord> _runtimes = const [];
 
   String get config => p.join(identity.configDir, 'providers-with-agents.json');
-  String get unitName => '${identity.shortName}-providers.service';
-  String get unitFile =>
-      p.join(identity.home, '.config/systemd/user', unitName);
+  String get unitName => Platform.isMacOS
+      ? 'com.${identity.shortName}.providers'
+      : '${identity.shortName}-providers.service';
+  String get unitFile => Platform.isMacOS
+      ? p.join(identity.home, 'Library/LaunchAgents', '$unitName.plist')
+      : p.join(identity.home, '.config/systemd/user', unitName);
 
   /// The compiled core this unit runs, or null when it must not be managed.
   String? get binary {
@@ -828,9 +862,13 @@ final class WatchService {
     final temp = env['TMPDIR'] ?? '';
     if (p.isWithin('/tmp', path) ||
         p.isWithin('/var/tmp', path) ||
+        p.isWithin('/private/tmp', path) ||
+        p.isWithin('/private/var/tmp', path) ||
+        p.isWithin('/private/var/folders', path) ||
         temp.isNotEmpty && p.isWithin(temp, path) ||
         path.contains('/.flutter-previews/') ||
-        path.contains('/build/linux/')) {
+        path.contains('/build/linux/') ||
+        path.contains('/build/macos/')) {
       return null;
     }
     return p.isAbsolute(path) &&
@@ -895,12 +933,61 @@ final class WatchService {
     }
   }
 
+  Future<bool> _launchctl(List<String> args) async {
+    try {
+      final result = await Process.run(
+        '/bin/launchctl',
+        args,
+      ).timeout(const Duration(seconds: 60));
+      return result.exitCode == 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// ensure_service: install, enable and start the watcher (on), or stop,
   /// disable and remove it (off); a unit of an older version is rewritten.
   Future<bool> ensure(bool on) async {
     final core = binary;
     if (core == null) return false;
     final unit = File(unitFile);
+    if (Platform.isMacOS) {
+      final uid = Posix().uid;
+      if (!on) {
+        if (!unit.existsSync()) return true;
+        await _launchctl(['bootout', 'gui/$uid', unitFile]);
+        try {
+          unit.deleteSync();
+        } on FileSystemException {
+          // gone already
+        }
+        return true;
+      }
+      final text = buildLaunchAgentPlist(
+        label: unitName,
+        programArguments: [
+          core,
+          'provider-watch',
+          if (unitSafe.hasMatch(config)) ...['--config', config],
+        ],
+      );
+      bool changed;
+      try {
+        changed = unit.readAsStringSync() != text;
+      } on FileSystemException {
+        changed = true;
+      }
+      if (changed) {
+        await _launchctl(['bootout', 'gui/$uid', unitFile]);
+        unit.parent.createSync(recursive: true);
+        unit.writeAsStringSync(text);
+        return _launchctl(['bootstrap', 'gui/$uid', unitFile]);
+      }
+      if (!await _launchctl(['print', 'gui/$uid/$unitName'])) {
+        return _launchctl(['bootstrap', 'gui/$uid', unitFile]);
+      }
+      return true;
+    }
     if (!on) {
       if (!unit.existsSync()) return true;
       await _systemctl(['disable', '--now', unitName]);

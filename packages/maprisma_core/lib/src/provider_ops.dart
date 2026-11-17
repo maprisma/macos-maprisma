@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'adapter_assets.g.dart';
 import 'installers.dart' show InstallHost, KoboldCppInstaller;
+import 'macos_platform.dart' show macosLoopbackListeners, macosOwnPort;
 import 'strata.dart';
 import 'model_downloads.dart';
 import 'model_hub.dart';
@@ -17,8 +18,12 @@ final modelKey = RegExp(
 );
 
 /// loopback.loopback_listeners: owners of the sockets listening on a
-/// loopback-reachable address on this TCP port (/proc/net/tcp and tcp6).
+/// loopback-reachable address on this TCP port (/proc/net/tcp on Linux,
+/// lsof on macOS).
 List<int> loopbackListeners(int port, {String proc = '/proc/net'}) {
+  if (Platform.isMacOS && proc == '/proc/net') {
+    return macosLoopbackListeners(port);
+  }
   final owners = <int>[];
   for (final name in ['tcp', 'tcp6']) {
     final String text;
@@ -48,6 +53,9 @@ List<int> loopbackListeners(int port, {String proc = '/proc/net'}) {
 }
 
 bool ownPort(int port, int uid, {String proc = '/proc/net'}) {
+  if (Platform.isMacOS && proc == '/proc/net') {
+    return macosOwnPort(port, uid);
+  }
   final owners = loopbackListeners(port, proc: proc);
   return owners.isNotEmpty && owners.every((o) => o == uid);
 }
@@ -264,8 +272,29 @@ final class ProviderOps {
     ], timeout: StrataFacts.startTimeout);
   }
 
-  Future<(bool, String)> _systemctl(String verb, RuntimeRecord rt) =>
-      runCommand(['systemctl', '--user', verb, '${rt.service}.service']);
+  Future<(bool, String)> _systemctl(String verb, RuntimeRecord rt) async {
+    if (Platform.isMacOS) {
+      final plist = files.expand('~/Library/LaunchAgents/${rt.service}.plist');
+      if (verb == 'start') {
+        if (File(plist).existsSync()) {
+          await runCommand(['/bin/launchctl', 'bootstrap', 'gui/$uid', plist]);
+        }
+        return runCommand([
+          '/bin/launchctl',
+          'kickstart',
+          '-k',
+          'gui/$uid/${rt.service}',
+        ]);
+      }
+      if (verb == 'stop') {
+        if (File(plist).existsSync()) {
+          return runCommand(['/bin/launchctl', 'bootout', 'gui/$uid', plist]);
+        }
+        return runCommand(['/bin/launchctl', 'stop', rt.service]);
+      }
+    }
+    return runCommand(['systemctl', '--user', verb, '${rt.service}.service']);
+  }
 
   Future<(bool, String)> _lmsRun(List<String> args) async {
     final binary = lmsBinary();

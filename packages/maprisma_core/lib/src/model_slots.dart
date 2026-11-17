@@ -198,6 +198,15 @@ final class EngineSlots {
   String? _unit(Map rt) {
     final service = '${rt['service'] ?? ''}';
     if (service.isEmpty) return null;
+    if (Platform.isMacOS) {
+      for (final candidate in [
+        '$home/Library/LaunchAgents/$service.plist',
+        '$home/Library/LaunchAgents/com.maprisma.$service.plist',
+      ]) {
+        if (FileSystemEntity.isFileSync(candidate)) return candidate;
+      }
+      return null;
+    }
     final path = '$home/.config/systemd/user/$service.service';
     return FileSystemEntity.isFileSync(path) ? path : null;
   }

@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:ffi' show Abi;
 import 'dart:io';
-import 'process_group.dart' show ProcessGroup;
+import 'process_group.dart' show ProcessGroup, startInNewSession;
 import 'package:path/path.dart' as p;
 import 'context.dart' show bestContext;
 import 'desktop.dart' show whichIn;
+import 'macos_platform.dart'
+    show buildLaunchAgentPlist, janRootPath, macosHardwareInfo;
 import 'model_downloads.dart';
 import 'model_hub.dart' show boundedOutput, netFetch;
 import 'posix_ffi.dart';
@@ -100,8 +102,17 @@ final class Gpu {
   );
 }
 
-/// detect_gpu: the card with the most video memory (AMD or NVIDIA).
+/// detect_gpu: the card with the most video memory (AMD, NVIDIA, or Apple Metal).
 Future<Gpu> detectGpu() async {
+  if (Platform.isMacOS) {
+    final hw = macosHardwareInfo();
+    return Gpu(
+      vendor: hw.vendor,
+      name: hw.name,
+      count: hw.vendor == 'cpu' ? 0 : 1,
+      vram: hw.vram,
+    );
+  }
   final cards = <(String, int, String)>[];
   List<String> devices;
   try {
@@ -314,7 +325,7 @@ Future<bool> runWithDiskBudget(
   int budget,
   Duration timeout,
 ) async {
-  final process = await Process.start('setsid', argv, workingDirectory: cwd);
+  final process = await startInNewSession(argv, workingDirectory: cwd);
   final group = ProcessGroup(process.pid)..watch(); // never by number
   process.stdin.close();
   process.stdout.drain<void>();
@@ -425,9 +436,9 @@ int openVerified(ModelFiles files, String path, String digest) {
   final int fd;
   try {
     fd = posix.openAt(
-      -100,
+      Posix.atFdCwd,
       path,
-      0x20000,
+      Posix.noFollow,
     ); // O_RDONLY | O_NOFOLLOW (+ O_CLOEXEC)
   } on FileSystemException catch (error) {
     throw StateError(
@@ -465,7 +476,12 @@ final class InstallHost {
   final Posix posix;
   final String? path; // PATH for the tool checks
   String get binDir => '$home/.local/bin';
-  String get unitDir => '$home/.config/systemd/user';
+  String get unitDir => Platform.isMacOS
+      ? '$home/Library/LaunchAgents'
+      : '$home/.config/systemd/user';
+  String servicePath(String service) => Platform.isMacOS
+      ? '$unitDir/com.maprisma.$service.plist'
+      : '$unitDir/$service.service';
 
   /// _write: a new file beside it, its mode set, then renamed over.
   void write(String path, String text, [int mode = 0x1a4]) {
@@ -478,6 +494,43 @@ final class InstallHost {
     }
     Directory(p.dirname(path)).createSync(recursive: true);
     posix.replaceFile(path, utf8.encode(text), mode);
+  }
+
+  Future<(bool, String)> launchctl(
+    String service,
+    String plistPath, {
+    required bool startAtLogin,
+    required bool startNow,
+  }) async {
+    final domain = 'gui/${posix.uid}';
+    final label = 'com.maprisma.$service';
+    await boundedOutput(
+      ['/bin/launchctl', 'bootout', domain, plistPath],
+      timeout: const Duration(seconds: 30),
+      mergeStderr: true,
+    );
+    if (!startAtLogin && !startNow) return (true, '');
+    final (bOut, bOk) = await boundedOutput(
+      ['/bin/launchctl', 'bootstrap', domain, plistPath],
+      timeout: const Duration(seconds: 60),
+      mergeStderr: true,
+    );
+    if (!bOk) {
+      final text = utf8.decode(bOut, allowMalformed: true).trim();
+      return (false, text.length > 300 ? text.substring(0, 300) : text);
+    }
+    if (startNow) {
+      final (kOut, kOk) = await boundedOutput(
+        ['/bin/launchctl', 'kickstart', '-k', '$domain/$label'],
+        timeout: const Duration(seconds: 60),
+        mergeStderr: true,
+      );
+      if (!kOk) {
+        final text = utf8.decode(kOut, allowMalformed: true).trim();
+        return (false, text.length > 300 ? text.substring(0, 300) : text);
+      }
+    }
+    return (true, '');
   }
 
   Future<(bool, String)> systemctl(List<String> args) async {
@@ -552,6 +605,7 @@ abstract class Installer {
       extract(archive, folder, name: name);
   String envText(String? models, Gpu gpu) => '';
   String unitText(String? models) => '';
+  String plistText(String? models, Gpu gpu, {bool runAtLoad = true}) => '';
   Future<void> configure(String? models) async {}
 
   /// installed_folder: our program folder, from the ~/.local/bin link.
@@ -793,7 +847,8 @@ abstract class Installer {
         release.digests[asset]!,
       );
       try {
-        await unpack('/proc/$pid/fd/$fd', partial, name: asset);
+        final fdPath = Platform.isMacOS ? '/dev/fd/$fd' : '/proc/$pid/fd/$fd';
+        await unpack(fdPath, partial, name: asset);
       } finally {
         host.posix.close(fd);
       }
@@ -811,18 +866,34 @@ abstract class Installer {
     if (env != null) host.write(env, envText(models, gpu), 0x180);
     await configure(models);
     if (hasService) {
-      host.write('${host.unitDir}/$service.service', unitText(models));
-      await host.systemctl(['daemon-reload']);
-      await host.systemctl([
-        startAtLogin ? 'enable' : 'disable',
-        '$service.service',
-      ]);
-      if (startNow) {
-        final (ok, message) = await host.systemctl([
-          'restart',
+      if (Platform.isMacOS) {
+        final plist = host.servicePath(service);
+        host.write(plist, plistText(models, gpu, runAtLoad: startAtLogin));
+        final (ok, message) = await host.launchctl(
+          service,
+          plist,
+          startAtLogin: startAtLogin,
+          startNow: startNow,
+        );
+        if (!ok && startNow) {
+          throw StateError('installed, but it did not start: $message');
+        }
+      } else {
+        host.write('${host.unitDir}/$service.service', unitText(models));
+        await host.systemctl(['daemon-reload']);
+        await host.systemctl([
+          startAtLogin ? 'enable' : 'disable',
           '$service.service',
         ]);
-        if (!ok) throw StateError('installed, but it did not start: $message');
+        if (startNow) {
+          final (ok, message) = await host.systemctl([
+            'restart',
+            '$service.service',
+          ]);
+          if (!ok) {
+            throw StateError('installed, but it did not start: $message');
+          }
+        }
       }
     }
   }
@@ -876,7 +947,7 @@ final class OllamaInstaller extends Installer {
   @override
   String get service => 'ollama';
   @override
-  String get binRel => 'bin/ollama';
+  String get binRel => Platform.isMacOS ? 'ollama' : 'bin/ollama';
   @override
   String get typeName => 'install_ctl.Ollama';
   @override
@@ -893,13 +964,17 @@ final class OllamaInstaller extends Installer {
     if (!RegExp(r'^v\d+\.\d+\.\d+$').hasMatch(version)) {
       throw StateError('no release found');
     }
-    final wanted = [
-      'ollama-linux-amd64.tar.zst',
-      if (gpu.vendor == 'amd') 'ollama-linux-amd64-rocm.tar.zst',
-    ];
+    final wanted = Platform.isMacOS
+        ? ['ollama-darwin.tgz']
+        : [
+            'ollama-linux-amd64.tar.zst',
+            if (gpu.vendor == 'amd') 'ollama-linux-amd64-rocm.tar.zst',
+          ];
     final assets = _byName(data);
     if (wanted.any((n) => !assets.containsKey(n))) {
-      throw StateError('$version has no Linux build');
+      throw StateError(
+        '$version has no ${Platform.isMacOS ? 'macOS' : 'Linux'} build',
+      );
     }
     return githubRelease(version, [for (final n in wanted) assets[n]!]);
   }
@@ -938,6 +1013,28 @@ KillMode=control-group
 [Install]
 WantedBy=default.target
 ''';
+
+  @override
+  String plistText(String? models, Gpu gpu, {bool runAtLoad = true}) {
+    checkEnvValue(envFile);
+    checkEnvValue('${host.binDir}/$command');
+    return buildLaunchAgentPlist(
+      label: 'com.maprisma.$service',
+      programArguments: [
+        '/bin/sh',
+        '-c',
+        r'set -a; [ -r "$1" ] && . "$1"; set +a; shift; exec "$@"',
+        'sh',
+        envFile,
+        '${host.binDir}/$command',
+        'serve',
+      ],
+      environment: {'MAPRISMA_ENV_FILE': envFile},
+      runAtLoad: runAtLoad,
+      keepAlive: runAtLoad,
+      comment: 'installed by Maprisma',
+    );
+  }
 }
 
 final class LlamaCppInstaller extends Installer {
@@ -959,16 +1056,23 @@ final class LlamaCppInstaller extends Installer {
   @override
   String get address => '127.0.0.1:8080';
   @override
-  List<(String, String)> get builds => const [
-    ('vulkan', 'Vulkan'),
-    ('rocm', 'ROCm'),
-    ('cuda', 'CUDA'),
-    ('cpu', 'CPU'),
-  ];
+  List<(String, String)> get builds => Platform.isMacOS
+      ? (Abi.current() == Abi.macosArm64
+            ? const [('metal', 'Metal')]
+            : const [('cpu', 'CPU')])
+      : const [
+          ('vulkan', 'Vulkan'),
+          ('rocm', 'ROCm'),
+          ('cuda', 'CUDA'),
+          ('cpu', 'CPU'),
+        ];
   String get preset => '$home/.config/llama.cpp/models.ini';
 
   @override
   String defaultBuild(Gpu gpu) {
+    if (Platform.isMacOS) {
+      return Abi.current() == Abi.macosArm64 ? 'metal' : 'cpu';
+    }
     if (gpu.vendor == 'nvidia') return 'cuda';
     if (gpu.vendor == 'amd') {
       return File('/opt/rocm/lib/libamdhip64.so').existsSync()
@@ -984,14 +1088,20 @@ final class LlamaCppInstaller extends Installer {
     final data = await _jsonAny(
       'https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=5',
     );
-    final pattern = RegExp(
-      {
-        'vulkan': r'^llama-(b\d+)-bin-ubuntu-vulkan-x64\.tar\.gz$',
-        'rocm': r'^llama-(b\d+)-bin-ubuntu-rocm-[\d.]+-x64\.tar\.gz$',
-        'cuda': r'^llama-(b\d+)-bin-ubuntu-cuda-12[\d.]*-x64\.tar\.gz$',
-        'cpu': r'^llama-(b\d+)-bin-ubuntu-x64\.tar\.gz$',
-      }[build]!,
-    );
+    final pattern = Platform.isMacOS
+        ? RegExp(
+            Abi.current() == Abi.macosArm64
+                ? r'^llama-(b\d+)-bin-macos-arm64\.tar\.gz$'
+                : r'^llama-(b\d+)-bin-macos-x64\.tar\.gz$',
+          )
+        : RegExp(
+            {
+              'vulkan': r'^llama-(b\d+)-bin-ubuntu-vulkan-x64\.tar\.gz$',
+              'rocm': r'^llama-(b\d+)-bin-ubuntu-rocm-[\d.]+-x64\.tar\.gz$',
+              'cuda': r'^llama-(b\d+)-bin-ubuntu-cuda-12[\d.]*-x64\.tar\.gz$',
+              'cpu': r'^llama-(b\d+)-bin-ubuntu-x64\.tar\.gz$',
+            }[build]!,
+          );
     for (final release in data is List ? data : const []) {
       final assets = [
         for (final a in ((release as Map)['assets'] ?? []) as List)
@@ -1003,7 +1113,7 @@ final class LlamaCppInstaller extends Installer {
       if (main == null) continue;
       final version = pattern.firstMatch('${main['name']}')!.group(1)!;
       final picked = [main];
-      if (build == 'cuda') {
+      if (!Platform.isMacOS && build == 'cuda') {
         final runtime = RegExp(
           '^cudart-llama-${RegExp.escape(version)}-bin-ubuntu-cuda-12[\\d.]*-x64\\.tar\\.gz\$',
         );
@@ -1014,7 +1124,31 @@ final class LlamaCppInstaller extends Installer {
       }
       return githubRelease('$version-$build', picked);
     }
-    throw StateError('no $build build for Linux found');
+    throw StateError(
+      'no $build build for ${Platform.isMacOS ? 'macOS' : 'Linux'} found',
+    );
+  }
+
+  @override
+  Future<void> unpack(String archive, String folder, {String? name}) async {
+    await super.unpack(archive, folder, name: name);
+    if (Platform.isMacOS && !_exists('$folder/$binRel')) {
+      flatten(folder);
+      if (!_exists('$folder/$binRel') &&
+          FileSystemEntity.isDirectorySync('$folder/bin')) {
+        for (final child in Directory(
+          '$folder/bin',
+        ).listSync(followLinks: false)) {
+          final dst = '$folder/${p.basename(child.path)}';
+          if (!_lexists(dst)) child.renameSync(dst);
+        }
+        try {
+          Directory('$folder/bin').deleteSync();
+        } on FileSystemException {
+          // Non-empty if a name collided; leave in place.
+        }
+      }
+    }
   }
 
   @override
@@ -1057,6 +1191,34 @@ WantedBy=default.target
 ''';
 
   @override
+  String plistText(String? models, Gpu gpu, {bool runAtLoad = true}) {
+    checkEnvValue(envFile);
+    checkEnvValue('${host.binDir}/$command');
+    checkEnvValue(preset);
+    return buildLaunchAgentPlist(
+      label: 'com.maprisma.$service',
+      programArguments: [
+        '/bin/sh',
+        '-c',
+        r'set -a; [ -r "$1" ] && . "$1"; set +a; shift; exec "$@"',
+        'sh',
+        envFile,
+        '${host.binDir}/$command',
+        '--models-preset',
+        preset,
+        '--gpu-layers',
+        'all',
+        '--flash-attn',
+        'on',
+      ],
+      environment: {'MAPRISMA_ENV_FILE': envFile},
+      runAtLoad: runAtLoad,
+      keepAlive: runAtLoad,
+      comment: 'installed by Maprisma',
+    );
+  }
+
+  @override
   Future<void> configure(String? models) async {
     if (!_exists(preset)) {
       host.write(
@@ -1086,20 +1248,26 @@ final class KoboldCppInstaller extends Installer {
   @override
   String get address => '127.0.0.1:5001';
   @override
-  List<(String, String)> get builds => const [
-    ('vulkan', 'Vulkan'),
-    ('cuda', 'CUDA'),
-    ('cpu', 'CPU'),
-  ];
+  List<(String, String)> get builds => Platform.isMacOS
+      ? (Abi.current() == Abi.macosArm64
+            ? const [('metal', 'Metal'), ('cpu', 'CPU')]
+            : const [('cpu', 'CPU')])
+      : const [('vulkan', 'Vulkan'), ('cuda', 'CUDA'), ('cpu', 'CPU')];
   static const assetNames = {
     'vulkan': 'koboldcpp-linux-x64-nocuda',
     'cuda': 'koboldcpp-linux-x64',
     'cpu': 'koboldcpp-linux-x64-nocuda',
   };
+  static const macosAssetNames = {
+    'metal': 'koboldcpp-mac-arm64',
+    'cpu': 'koboldcpp-mac-arm64',
+  };
   String get configs => '$home/.config/koboldcpp/models';
 
   @override
-  String defaultBuild(Gpu gpu) => gpu.vendor == 'nvidia'
+  String defaultBuild(Gpu gpu) => Platform.isMacOS
+      ? (Abi.current() == Abi.macosArm64 ? 'metal' : 'cpu')
+      : gpu.vendor == 'nvidia'
       ? 'cuda'
       : gpu.vendor == 'amd'
       ? 'vulkan'
@@ -1115,8 +1283,16 @@ final class KoboldCppInstaller extends Installer {
     if (!RegExp(r'^v\d+\.\d+(\.\d+)?$').hasMatch(version)) {
       throw StateError('no release found');
     }
-    final asset = _byName(data)[assetNames[build]];
-    if (asset == null) throw StateError('$version has no Linux build');
+    final asset = Platform.isMacOS
+        ? (Abi.current() == Abi.macosArm64
+              ? _byName(data)[macosAssetNames[build]]
+              : null)
+        : _byName(data)[assetNames[build]];
+    if (asset == null) {
+      throw StateError(
+        '$version has no ${Platform.isMacOS ? 'macOS' : 'Linux'} build',
+      );
+    }
     return githubRelease('$version-$build', [asset]);
   }
 
@@ -1130,6 +1306,9 @@ final class KoboldCppInstaller extends Installer {
 
   String buildOf() {
     final build = host.readEnv(envFile)['KOBOLDCPP_BUILD'] ?? '';
+    if (Platform.isMacOS) {
+      return macosAssetNames.containsKey(build) ? build : 'metal';
+    }
     return assetNames.containsKey(build) ? build : 'vulkan';
   }
 
@@ -1139,7 +1318,9 @@ final class KoboldCppInstaller extends Installer {
   String envText(String? models, Gpu gpu) {
     var build = defaultBuild(gpu);
     final tail = currentVersion().split('-').last;
-    if (assetNames.containsKey(tail)) build = tail;
+    if ((Platform.isMacOS ? macosAssetNames : assetNames).containsKey(tail)) {
+      build = tail;
+    }
     return [
       '# Written by Maprisma. Change the model folder there (right-click KoboldCpp).',
       'KOBOLDCPP_MODELS=${models ?? 'None'}',
@@ -1175,6 +1356,42 @@ KillMode=control-group
 [Install]
 WantedBy=default.target
 ''';
+  }
+
+  @override
+  String plistText(String? models, Gpu gpu, {bool runAtLoad = true}) {
+    checkEnvValue(envFile);
+    checkEnvValue('${host.binDir}/$command');
+    checkEnvValue(configs);
+    final at = address.lastIndexOf(':');
+    final b = buildOf();
+    return buildLaunchAgentPlist(
+      label: 'com.maprisma.$service',
+      programArguments: [
+        '/bin/sh',
+        '-c',
+        r'set -a; [ -r "$1" ] && . "$1"; set +a; shift; exec "$@"',
+        'sh',
+        envFile,
+        '${host.binDir}/$command',
+        '--skiplauncher',
+        '--nomodel',
+        '--admin',
+        '--admindir',
+        configs,
+        '--routermode',
+        '--host',
+        address.substring(0, at),
+        '--port',
+        address.substring(at + 1),
+        if (b == 'cpu') '--usecpu',
+        '--quiet',
+      ],
+      environment: {'MAPRISMA_ENV_FILE': envFile},
+      runAtLoad: runAtLoad,
+      keepAlive: runAtLoad,
+      comment: 'installed by Maprisma',
+    );
   }
 
   Future<List<String>> sync(String models) async {
@@ -1284,7 +1501,7 @@ Future<List<String>> koboldSync(
         'usecuda': []
       else if (build == 'vulkan')
         'usevulkan': []
-      else
+      else if (build != 'metal')
         'usecpu': true,
     };
     final tmp = File('$configs/.$name.new')
@@ -1323,10 +1540,12 @@ final class JanInstaller extends Installer {
   String get binRel => 'squashfs-root/AppRun';
   @override
   String get typeName => 'install_ctl.Jan';
+  @override
+  bool get canInstall => !Platform.isMacOS;
   static const workerRel = 'squashfs-root/usr/lib/Jan/resources/bin';
   String get desktopFile =>
       '$home/.local/share/applications/jan-maprisma.desktop';
-  String get janRoot => '$home/.local/share/Jan';
+  String get janRoot => janRootPath(home);
 
   /// inventory.jan_data_folder.
   String dataFolder() {
@@ -1695,8 +1914,9 @@ final class StrataInstaller extends Installer {
       final files = ModelFiles(host.posix);
       final fd = openVerified(files, script, release.digests[asset]!);
       try {
+        final fdPath = Platform.isMacOS ? '/dev/fd/$fd' : '/proc/$pid/fd/$fd';
         (out, ok) = await boundedOutput(
-          ['sh', '/proc/$pid/fd/$fd'],
+          ['sh', fdPath],
           maxBytes: 256 * 1024,
           timeout: timeout,
           mergeStderr: true,
@@ -1759,8 +1979,8 @@ final class MiseInstaller extends Installer {
   @override
   Future<Release> latest(Gpu gpu, String build) async {
     final arch = switch (Abi.current()) {
-      Abi.linuxX64 => 'x64',
-      Abi.linuxArm64 => 'arm64',
+      Abi.linuxX64 || Abi.macosX64 => 'x64',
+      Abi.linuxArm64 || Abi.macosArm64 => 'arm64',
       _ => throw StateError('no mise build for this machine'),
     };
     final data = await _json(
@@ -1770,7 +1990,9 @@ final class MiseInstaller extends Installer {
     if (!RegExp(r'^v\d{4}\.\d{1,2}\.\d{1,3}$').hasMatch(version)) {
       throw StateError('no mise release found');
     }
-    final wanted = 'mise-$version-linux-$arch-musl.tar.gz';
+    final wanted = Platform.isMacOS
+        ? 'mise-$version-macos-$arch.tar.gz'
+        : 'mise-$version-linux-$arch-musl.tar.gz';
     final assets = [
       for (final a in (data['assets'] ?? []) as List)
         if (a is Map && a['name'] == wanted) a,
@@ -1902,7 +2124,7 @@ final class Installers {
     }
     final protected = [
       if (inst.envFile != null) inst.envFile!,
-      if (inst.hasService) '${host.unitDir}/${inst.service}.service',
+      if (inst.hasService) host.servicePath(inst.service),
     ];
     if (protected.any(_lexists)) {
       throw const FormatException(

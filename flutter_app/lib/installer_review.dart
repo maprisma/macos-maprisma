@@ -32,6 +32,7 @@ class InstallerReview extends StatefulWidget {
 }
 
 const _buildHelp = {
+  'metal': 'Metal: Apple Silicon unified memory, built into macOS.',
   'vulkan': 'Vulkan: any AMD or NVIDIA card, nothing else needed.',
   'rocm': 'ROCm: AMD, needs ROCm installed (/opt/rocm).',
   'cuda': 'CUDA: NVIDIA.',

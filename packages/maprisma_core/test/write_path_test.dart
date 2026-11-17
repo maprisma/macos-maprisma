@@ -373,6 +373,10 @@ void main() {
     addTearDown(() => dir.deleteSync(recursive: true));
     final sessions = PtySessions();
     bool alive(int pid) {
+      if (Platform.isMacOS) {
+        final r = Process.runSync('/bin/ps', ['-p', '$pid', '-o', 'state=']);
+        return r.exitCode == 0 && !(r.stdout as String).trim().startsWith('Z');
+      }
       try {
         final state = File('/proc/$pid/stat').readAsStringSync();
         return !state.substring(state.lastIndexOf(')') + 2).startsWith('Z');
@@ -393,13 +397,16 @@ void main() {
     int pidAfter(String text, String word) =>
         int.parse(RegExp('$word (\\d+)').firstMatch(text)![1]!);
     final env = {'PATH': '/usr/bin:/bin'};
+    final otherSession = Platform.isMacOS
+        ? "/usr/bin/perl -MPOSIX=setsid -e 'setsid(); exec \"sleep\", \"300\"'"
+        : 'setsid sleep 300';
     // Running: the leader, its background child; another session left alone.
     var ident = sessions.start(
       't',
       [
         '/bin/sh',
         '-c',
-        'sleep 300 & echo CHILD \$!; setsid sleep 300 & echo OTHER \$!; echo END; exec sleep 300',
+        'sleep 300 & echo CHILD \$!; $otherSession & echo OTHER \$!; echo END; exec sleep 300',
       ],
       dir.path,
       env,

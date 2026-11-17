@@ -11,11 +11,17 @@ void main() {
 
   setUpAll(() async {
     dir = Directory.systemTemp.createTempSync('runner-toggle');
-    final flags = await Process.run('pkg-config', [
-      '--cflags',
-      '--libs',
-      'glib-2.0',
-    ]);
+    if (!Platform.isLinux) return;
+    final ProcessResult flags;
+    try {
+      flags = await Process.run('pkg-config', [
+        '--cflags',
+        '--libs',
+        'glib-2.0',
+      ]);
+    } on ProcessException {
+      return;
+    }
     if (flags.exitCode != 0) return;
     File('${dir.path}/main.c').writeAsStringSync(
       '#include <stdlib.h>\n#include "$header"\n'

@@ -16,7 +16,9 @@ final class AgentProfiles {
   final ScanFiles files;
   final String configDir;
   static final _command = RegExp(r'^[a-z0-9][a-z0-9-]{0,63}$');
-  static final _path = RegExp(r'^~/[A-Za-z0-9._@+/-]{1,200}$');
+  static final _path = RegExp(
+    r'^~/(?:Library/Application Support/)?[A-Za-z0-9._@+/-]{1,200}$',
+  );
   static final _private = RegExp(
     r'(^|/)\.(ssh|gnupg|password-store|aws|azure|kube|docker|pki|netrc|git-credentials)(/|$)'
     r'|auth|credential|secret|token|password|keyring|\.pem$|\.key$',

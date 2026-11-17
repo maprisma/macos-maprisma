@@ -171,6 +171,23 @@ final class AgentCatalog {
 
   String? packageVersion(String name) {
     final root = files.identity.environment['MAPRISMA_SCAN_SYSTEM_ROOT'] ?? '';
+    if (Platform.isMacOS && root.isEmpty) {
+      for (final cellar in const [
+        '/opt/homebrew/Cellar',
+        '/usr/local/Cellar',
+      ]) {
+        final versions = files.list(
+          '$cellar/$name',
+          limit: 64,
+          allowRootOwned: true,
+        );
+        if (versions.isNotEmpty) {
+          versions.sort();
+          return p.basename(versions.last);
+        }
+      }
+      return null;
+    }
     for (final path in files.list(
       '$root/var/lib/pacman/local',
       limit: 40000,

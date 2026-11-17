@@ -243,12 +243,15 @@ final class FoundScan {
   final Posix posix;
 
   static List<(String, int)> defaultSkillRoots(String home) => [
+    if (Platform.isMacOS) ('/opt/homebrew/share', 4),
     ('/usr/share', 4),
     ('/usr/local/share', 4),
     ('/opt', 5),
+    if (Platform.isMacOS) ('/Applications', 5),
     (p.join(home, 'Applications'), 6),
     (p.join(home, '.local/share'), 4),
     (p.join(home, '.local/lib/node_modules'), 4),
+    if (Platform.isMacOS) ('/opt/homebrew/lib/node_modules', 4),
     ('/usr/lib/node_modules', 4),
     (p.join(home, '.claude/plugins'), 6),
   ];
@@ -324,12 +327,26 @@ final class FoundScan {
       } finally {
         posix.close(fd);
       }
-      return head.length >= 4 &&
-              head[0] == 0x7f &&
-              head[1] == 0x45 &&
-              head[2] == 0x4c &&
-              head[3] == 0x46 ||
-          head.length >= 2 && head[0] == 0x23 && head[1] == 0x21;
+      final isElf =
+          head.length >= 4 &&
+          head[0] == 0x7f &&
+          head[1] == 0x45 &&
+          head[2] == 0x4c &&
+          head[3] == 0x46;
+      final isMachO =
+          Platform.isMacOS &&
+          head.length >= 4 &&
+          ((head[0] == 0xcf &&
+                  head[1] == 0xfa &&
+                  head[2] == 0xed &&
+                  head[3] == 0xfe) ||
+              (head[0] == 0xca &&
+                  head[1] == 0xfe &&
+                  head[2] == 0xba &&
+                  head[3] == 0xbe));
+      return isElf ||
+          isMachO ||
+          (head.length >= 2 && head[0] == 0x23 && head[1] == 0x21);
     } on Object {
       return false;
     }

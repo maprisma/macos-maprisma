@@ -109,8 +109,8 @@ void main() {
 
   test('one download per .part file', () {
     final part = '${dir.path}/m.gguf.part';
-    final a = posix.openAt(-100, part, 0x2 | 0x40, 0x1a4);
-    final b = posix.openAt(-100, part, 0x2);
+    final a = posix.openAt(-100, part, Posix.rdwr | Posix.creat, 0x1a4);
+    final b = posix.openAt(-100, part, Posix.rdwr);
     expect(posix.tryLockExclusive(a), isTrue);
     expect(posix.tryLockExclusive(b), isFalse);
     posix.close(a);

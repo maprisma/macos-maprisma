@@ -100,11 +100,7 @@ void writeLaunchRecord(
       return;
     }
     if (folder.mode & 0x3f != 0) {
-      final fd = px.openAt(
-        -100,
-        dir,
-        0x10000 | 0x20000 /* O_DIRECTORY|O_NOFOLLOW, read-only */,
-      );
+      final fd = px.openAt(-100, dir, Posix.directory | Posix.noFollow);
       try {
         px.chmod(fd, 0x1c0);
       } finally {
@@ -125,7 +121,7 @@ void writeLaunchRecord(
     final fd = px.openAt(
       -100,
       temp,
-      0x1 | 0x40 | 0x80 | 0x20000 /* WRONLY|CREAT|EXCL|NOFOLLOW */,
+      Posix.wronly | Posix.creat | Posix.excl | Posix.noFollow,
       0x180,
     );
     try {

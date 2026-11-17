@@ -432,7 +432,7 @@ final class SettingsStore {
     final fd = posix.openAt(
       -100,
       '${identity.settingsPath}.lock',
-      0x2 | 0x40 | Posix.noFollow | Posix.cloexec,
+      Posix.rdwr | Posix.creat | Posix.noFollow | Posix.cloexec,
       0x180,
     );
     try {

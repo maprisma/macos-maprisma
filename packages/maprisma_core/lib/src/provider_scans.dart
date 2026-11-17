@@ -1,6 +1,13 @@
 import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'agent_details.dart';
+import 'macos_platform.dart'
+    show
+        janRootPath,
+        macosLoopbackListeners,
+        macosProcessEnv,
+        macosProcesses,
+        parseLaunchAgentPlist;
 import 'scan_files.dart';
 import 'strata.dart';
 import 'provider_facts.dart';
@@ -126,7 +133,17 @@ final class ProviderScans {
   final ScanFiles files;
   String get proc =>
       files.identity.environment['MAPRISMA_SCAN_PROC'] ?? '/proc';
+  bool get _useMacosHost =>
+      Platform.isMacOS &&
+      !files.identity.environment.containsKey('MAPRISMA_SCAN_PROC');
+
   List<ProcessRecord> processes() {
+    if (_useMacosHost) {
+      return [
+        for (final proc in macosProcesses(onlyUid: files.posix.uid))
+          ProcessRecord(proc.pid, proc.comm, proc.argv),
+      ];
+    }
     final found = <ProcessRecord>[];
     for (final path in files.list(proc, limit: 4000, allowRootOwned: true)) {
       final pid = int.tryParse(p.basename(path));
@@ -148,7 +165,11 @@ final class ProviderScans {
 
   /// inventory.parent_pid.
   int parentPid(int pid) {
+    if (_useMacosHost) {
+      return macosProcesses().where((p) => p.pid == pid).firstOrNull?.ppid ?? 0;
+    }
     final stat = files.text('$proc/$pid/stat', limit: 1024) ?? '';
+    if (!stat.contains(')')) return 0;
     final fields = stat
         .substring(stat.lastIndexOf(')') + 1)
         .trim()
@@ -157,6 +178,9 @@ final class ProviderScans {
   }
 
   Map<String, String> processEnv(int pid, Set<String> allowed) {
+    if (_useMacosHost) {
+      return macosProcessEnv(pid, allowed, files.posix.uid);
+    }
     final text = files.text('$proc/$pid/environ', limit: 256 * 1024) ?? '';
     final found = <String, String>{};
     for (final entry in text.split('\x00')) {
@@ -212,6 +236,55 @@ final class ProviderScans {
     'KOBOLDCPP_MODELS',
   };
   (String, Map<String, String>) unit(String binary, {bool named = false}) {
+    if (Platform.isMacOS) {
+      final plists =
+          named
+                ? [
+                    files.expand(
+                      '~/Library/LaunchAgents/com.maprisma.$binary.plist',
+                    ),
+                    files.expand(
+                      '~/Library/LaunchAgents/homebrew.mxcl.$binary.plist',
+                    ),
+                    files.expand('~/Library/LaunchAgents/$binary.plist'),
+                  ]
+                : files
+                      .list('~/Library/LaunchAgents', limit: 4000)
+                      .where((s) => s.endsWith('.plist'))
+                      .toList()
+            ..sort();
+      for (final path in plists.take(200)) {
+        final xml = files.text(path) ?? '';
+        if (xml.isEmpty) continue;
+        final parsed = parseLaunchAgentPlist(xml);
+        if (!named &&
+            !parsed.programArguments.any((a) => p.basename(a) == binary)) {
+          continue;
+        }
+        final env = <String, String>{
+          for (final e in parsed.environment.entries)
+            if (environmentKeys.contains(e.key)) e.key: e.value,
+        };
+        final envPath = parsed.environment['MAPRISMA_ENV_FILE'];
+        if (envPath != null && envPath.isNotEmpty) {
+          for (final value in RegExp(
+            r'^\s*(?:export\s+)?([A-Z_][A-Z0-9_]*)=(.*)$',
+            multiLine: true,
+          ).allMatches(files.text(files.expand(envPath)) ?? '')) {
+            if (environmentKeys.contains(value[1])) {
+              env[value[1]!] = value[2]!.trim().replaceAll(
+                RegExp('^[\'"]+|[\'"]+\$'),
+                '',
+              );
+            }
+          }
+        }
+        final label = parsed.label.isNotEmpty
+            ? parsed.label
+            : p.basenameWithoutExtension(path);
+        return (label, env);
+      }
+    }
     final entries =
         named
               ? [files.expand('~/.config/systemd/user/$binary.service')]
@@ -444,7 +517,10 @@ final class ProviderScans {
           ]);
           rt.installed = rt.installed || rt.service.isNotEmpty;
         case 'ollama':
-          rt.installed = which('ollama');
+          rt.installed =
+              which('ollama') ||
+              (Platform.isMacOS &&
+                  Directory('/Applications/Ollama.app').existsSync());
           final (service, env) = unit('ollama');
           rt.service = service;
           for (final process in processesNow) {
@@ -476,7 +552,11 @@ final class ProviderScans {
           rt.installed = rt.installed || rt.service.isNotEmpty;
         case 'lmstudio':
           final root = files.expand('~/.lmstudio');
-          rt.installed = Directory(root).existsSync() || which('lms');
+          rt.installed =
+              Directory(root).existsSync() ||
+              which('lms') ||
+              (Platform.isMacOS &&
+                  Directory('/Applications/LM Studio.app').existsSync());
           // Its server's port, when set in the app (Developer › Settings).
           final server = files.json('$root/.internal/http-server-config.json');
           final port = server['port'] is int && server['port'] > 0
@@ -573,17 +653,26 @@ final class ProviderScans {
           rt.modelFiles = absoluteFiles(servedFiles);
         case 'jan':
           rt.service = unit('jan', named: true).$1;
+          final serviceText = rt.service.isEmpty
+              ? ''
+              : (Platform.isMacOS
+                    ? (files.text(
+                            '~/Library/LaunchAgents/${rt.service}.plist',
+                          ) ??
+                          files.text('~/.config/systemd/user/jan.service') ??
+                          '')
+                    : (files.text('~/.config/systemd/user/jan.service') ?? ''));
           // The port its service starts the engine on, else the usual one.
-          var port = RegExp(r'--port[= ]+(\d{1,5})\b').firstMatch(
-            rt.service.isEmpty
-                ? ''
-                : files.text('~/.config/systemd/user/jan.service') ?? '',
-          )?[1];
-          final root = files.expand('~/.local/share/Jan');
+          var port = RegExp(
+            r'--port[= ]+(\d{1,5})\b',
+          ).firstMatch(serviceText)?[1];
+          final root = janRootPath(files.identity.home);
           rt.installed =
               rt.service.isNotEmpty ||
               Directory(root).existsSync() ||
-              which('jan');
+              which('jan') ||
+              (Platform.isMacOS &&
+                  Directory('/Applications/Jan.app').existsSync());
           for (final process in processesNow) {
             if (process.comm == 'jan-llama-worke' ||
                 process.argv.isNotEmpty &&
@@ -691,6 +780,9 @@ final class ProviderScans {
   }
 
   bool listeners(int port) {
+    if (_useMacosHost) {
+      return macosLoopbackListeners(port).contains(files.posix.uid);
+    }
     for (final path in ['$proc/net/tcp', '$proc/net/tcp6']) {
       final source = files.text(path, allowRootOwned: true) ?? '';
       for (final line in source.split('\n').skip(1)) {

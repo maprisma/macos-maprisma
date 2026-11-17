@@ -12,7 +12,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'package:maprisma_core/maprisma_core.dart'
-    show InstanceLockState, takeInstanceLock, writeLaunchRecord;
+    show InstanceLockState, appFolder, takeInstanceLock, writeLaunchRecord;
 
 import 'backend.dart';
 import 'map_benchmark.dart';
@@ -89,7 +89,7 @@ void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
   // Task 073: the release installer replaces this bundle only while no Maprisma of it runs.
-  final bundle = File(Platform.resolvedExecutable).parent.path;
+  final bundle = appFolder();
   if (takeInstanceLock(bundle) == InstanceLockState.busy) {
     await windowManager.setSize(const Size(520, 200));
     runApp(const InstallBusyApp());
@@ -98,10 +98,17 @@ void main(List<String> args) async {
   // How Maprisma Control can start this Maprisma again (an AppImage, an /opt install).
   writeLaunchRecord(Platform.environment, Platform.resolvedExecutable);
   await windowManager.setPreventClose(true);
+  if (Platform.isMacOS) {
+    await windowManager.setMinimumSize(const Size(960, 640));
+  }
   // The size the user gave the window last time (window.json).
   final sizes = WindowSizeStore(windowSizePath(Platform.environment));
   final size = sizes.load();
-  if (size != null) await windowManager.setSize(size);
+  if (size != null) {
+    await windowManager.setSize(size);
+  } else if (Platform.isMacOS) {
+    await windowManager.setSize(const Size(1280, 820));
+  }
   runApp(MaprismaApp(windowSizes: sizes, followWindowStyle: true));
 }
 
@@ -5564,6 +5571,24 @@ class _MaprismaAppState extends State<MaprismaApp> with WindowListener {
             const _ZoomIntent(0),
         const SingleActivator(LogicalKeyboardKey.numpad0, control: true):
             const _ZoomIntent(0),
+        if (Platform.isMacOS) ...{
+          const SingleActivator(LogicalKeyboardKey.comma, meta: true):
+              const _SettingsIntent(),
+          const SingleActivator(LogicalKeyboardKey.equal, meta: true):
+              const _ZoomIntent(1.25),
+          const SingleActivator(LogicalKeyboardKey.add, meta: true):
+              const _ZoomIntent(1.25),
+          const SingleActivator(LogicalKeyboardKey.numpadAdd, meta: true):
+              const _ZoomIntent(1.25),
+          const SingleActivator(LogicalKeyboardKey.minus, meta: true):
+              const _ZoomIntent(0.8),
+          const SingleActivator(LogicalKeyboardKey.numpadSubtract, meta: true):
+              const _ZoomIntent(0.8),
+          const SingleActivator(LogicalKeyboardKey.digit0, meta: true):
+              const _ZoomIntent(0),
+          const SingleActivator(LogicalKeyboardKey.numpad0, meta: true):
+              const _ZoomIntent(0),
+        },
         const SingleActivator(LogicalKeyboardKey.backspace):
             const _BackIntent(),
       },

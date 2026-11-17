@@ -36,6 +36,8 @@ List<String> defaultWorkerCommand(Map<String, String> environment) {
     ];
   }
   if (p.basename(executable) == 'maprisma-core') return [executable, 'worker'];
+  final sibling = p.join(p.dirname(executable), 'maprisma-core');
+  if (File(sibling).existsSync()) return [sibling, 'worker'];
   return [p.join(p.dirname(executable), 'lib', 'maprisma-core'), 'worker'];
 }
 

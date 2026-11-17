@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'process_group.dart' show ProcessGroup;
+import 'process_group.dart' show ProcessGroup, startInNewSession;
 import 'package:path/path.dart' as p;
 import 'py_time.dart';
 
@@ -21,9 +21,8 @@ Future<(List<int>, bool)> boundedOutput(
   // (a child with output streams of its own outlives the program's EOF).
   final Process process;
   try {
-    process = await Process.start(
-      'setsid',
-      ['--', ...argv],
+    process = await startInNewSession(
+      argv,
       environment: environment,
       includeParentEnvironment: inheritEnvironment,
     );

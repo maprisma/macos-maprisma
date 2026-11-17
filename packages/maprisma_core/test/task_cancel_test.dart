@@ -20,12 +20,15 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
     final pid = pidFile.readAsStringSync().trim();
+    bool pidExists() => Platform.isMacOS
+        ? Process.runSync('/bin/kill', ['-0', pid]).exitCode == 0
+        : Directory('/proc/$pid').existsSync();
     expect(tasks.status(ident)['state'], 'running');
     expect(tasks.cancel(ident)['state'], 'stopped');
-    for (var i = 0; i < 300 && Directory('/proc/$pid').existsSync(); i++) {
+    for (var i = 0; i < 300 && pidExists(); i++) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
-    expect(Directory('/proc/$pid').existsSync(), isFalse);
+    expect(pidExists(), isFalse);
     await Future<void>.delayed(const Duration(milliseconds: 50));
     expect(tasks.status(ident)['state'], 'stopped');
   });

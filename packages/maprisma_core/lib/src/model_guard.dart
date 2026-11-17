@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'package:path/path.dart' as p;
 import 'adapter_assets.g.dart';
+import 'macos_platform.dart' show macosHardwareInfo;
 import 'provider_ops.dart';
 import 'provider_scans.dart';
 import 'scan_files.dart';
@@ -62,7 +63,8 @@ final class GpuUsage {
   double? _number(String path) =>
       double.tryParse(_read(path, limit: 64).trim());
 
-  /// gpu_totals: (used, total, busy percent), from sysfs, else nvidia-smi.
+  /// gpu_totals: (used, total, busy percent), from sysfs, macOS IOAccelerator,
+  /// else nvidia-smi.
   Future<(int, int, double?)> totals() async {
     if (gpuDir != null) {
       return (
@@ -72,6 +74,10 @@ final class GpuUsage {
       );
     }
     if (_drm != null) return (0, 0, null);
+    if (Platform.isMacOS) {
+      final hw = macosHardwareInfo(includeIoreg: true);
+      return (hw.vramUsed, hw.vram, hw.busyPercent);
+    }
     try {
       final process = await Process.start('nvidia-smi', [
         '--query-gpu=memory.used,memory.total,utilization.gpu',
@@ -148,6 +154,7 @@ final class GpuUsage {
 
   /// proc_vram: GPU memory really on the GPU for one of this user's processes.
   int procVram(int pid) {
+    if (Platform.isMacOS) return 0;
     if (files.posix.lstatFull('/proc/$pid', follow: true)?.uid != uid) {
       return 0;
     }
@@ -223,20 +230,8 @@ final class GpuUsage {
     final parent = <int, int>{}, roots = <int, String>{};
     final strataOwns = StrataFacts(files).owns;
     for (final process in processes) {
-      final stat =
-          files.text(
-            '/proc/${process.pid}/stat',
-            limit: 1024,
-            portion: 'head',
-          ) ??
-          '';
-      final fields = stat
-          .substring(stat.lastIndexOf(')') + 1)
-          .trim()
-          .split(RegExp(r'\s+'));
-      if (fields.length > 1 && RegExp(r'^\d+$').hasMatch(fields[1])) {
-        parent[process.pid] = int.parse(fields[1]);
-      }
+      final ppid = scans.parentPid(process.pid);
+      if (ppid > 0) parent[process.pid] = ppid;
       final key = runtimeOf(process.comm, process.argv, strata: strataOwns);
       if (key.isNotEmpty) roots[process.pid] = key;
     }

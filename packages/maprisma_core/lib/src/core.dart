@@ -2877,15 +2877,7 @@ final class CoreService {
       processes: () => [
         for (final x in scans.processes()) (x.pid, x.comm, x.argv),
       ],
-      parentOf: (pid) {
-        final stat = reads.files.text('${scans.proc}/$pid/stat', limit: 1024);
-        if (stat == null || !stat.contains(')')) return 0;
-        final fields = stat
-            .substring(stat.lastIndexOf(')') + 1)
-            .trim()
-            .split(RegExp(r'\s+'));
-        return fields.length > 1 ? int.tryParse(fields[1]) ?? 0 : 0;
-      },
+      parentOf: scans.parentPid,
     );
   }
 
@@ -2899,6 +2891,7 @@ final class CoreService {
       throw const FormatException('Unexpected parameters');
     }
     if (method == 'models.slots_reload') {
+      if (Platform.isMacOS) return {'ok': true};
       // A local LLM's service file was among the changes: systemd reads it again.
       final run = Process.runSync('systemctl', ['--user', 'daemon-reload']);
       return {'ok': run.exitCode == 0};

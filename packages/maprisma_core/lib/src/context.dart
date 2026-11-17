@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:path/path.dart' as p;
 import 'connect_apply.dart';
+import 'macos_platform.dart' show janRootPath, macosHardwareInfo;
 import 'provider_scans.dart' show RuntimeRecord;
 import 'posix_ffi.dart';
 import 'py_values.dart';
@@ -53,7 +54,9 @@ RandomAccessFile openRegular(String path) {
       throw const FormatException('not a regular file');
     }
     // The same open file (its inode), now as a blocking reader.
-    return File('/proc/self/fd/$fd').openSync();
+    return File(
+      Platform.isMacOS ? '/dev/fd/$fd' : '/proc/self/fd/$fd',
+    ).openSync();
   } finally {
     posix.close(fd);
   }
@@ -275,8 +278,13 @@ final class ContextReader {
   String get modelsIni => p.join(home, '.config/llama.cpp/models.ini');
   String get lmstudio => p.join(home, '.lmstudio');
 
-  /// gpu_usage.gpu_totals()[1]: the discrete card's VRAM (sysfs), else nvidia-smi.
+  /// gpu_usage.gpu_totals()[1]: unified memory on Apple Silicon, else discrete
+  /// card's VRAM (sysfs), else nvidia-smi.
   int vramTotal() {
+    if (Platform.isMacOS &&
+        !files.identity.environment.containsKey('MAPRISMA_SCAN_GPU')) {
+      return macosHardwareInfo().vram;
+    }
     int? best;
     for (final entry in files.list(
       '/sys/class/drm',
@@ -670,7 +678,7 @@ final class ContextReader {
 
   /// inventory.jan_data_folder: settings.json's data_folder, else data/.
   String janDataFolder() {
-    final root = p.join(home, '.local/share/Jan');
+    final root = janRootPath(home);
     final value = files.json('$root/settings.json')['data_folder'];
     if (value is String && value.trim().isNotEmpty) {
       final path = files.expand(value.trim());

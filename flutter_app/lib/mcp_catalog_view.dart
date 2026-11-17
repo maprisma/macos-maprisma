@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'mcp_tools_view.dart';
 
@@ -17,11 +18,17 @@ const _runText = {
   'remote':
       'Runs at {0}. Nothing is installed; what the agents send to it leaves your PC.',
 };
-const _runners = {
-  'npx': 'Node.js (npx) is not installed yet: sudo pacman -S nodejs npm',
-  'uvx': 'uv (uvx) is not installed yet: sudo pacman -S uv',
-  'docker': 'Docker is not installed yet: sudo pacman -S docker',
-};
+final _runners = Platform.isMacOS
+    ? const {
+        'npx': 'Node.js (npx) is not installed yet: brew install node',
+        'uvx': 'uv (uvx) is not installed yet: brew install uv',
+        'docker': 'Docker is not installed yet: brew install --cask docker',
+      }
+    : const {
+        'npx': 'Node.js (npx) is not installed yet: sudo pacman -S nodejs npm',
+        'uvx': 'uv (uvx) is not installed yet: sudo pacman -S uv',
+        'docker': 'Docker is not installed yet: sudo pacman -S docker',
+      };
 final _nameRe = RegExp(r'^[A-Za-z0-9_.-]{1,64}$');
 const _page = 20;
 

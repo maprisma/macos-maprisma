@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'agent_catalog.dart';
 import 'agent_details.dart';
+import 'macos_platform.dart' show macosProcessOpenFiles;
 import 'provider_scans.dart';
 import 'scan_files.dart';
 import 'session_readers.dart';
@@ -36,9 +37,13 @@ final class ActivityReaders {
   final SqliteNumbers sqlite;
   final previous = <int, (int, double)>{};
   final elapsed = Stopwatch()..start();
-  static final ticks = DynamicLibrary.open(
-    'libc.so.6',
-  ).lookupFunction<IntPtr Function(Int), int Function(int)>('sysconf')(2);
+  static final ticks =
+      (Platform.isMacOS
+              ? DynamicLibrary.process()
+              : DynamicLibrary.open('libc.so.6'))
+          .lookupFunction<IntPtr Function(Int), int Function(int)>('sysconf')(
+        Platform.isMacOS ? 3 /* _SC_CLK_TCK on Darwin */ : 2,
+      );
   double? written(String path) {
     final data = files.bytes(path, limit: 1, portion: 'head');
     if (data == null) return null;
@@ -46,21 +51,29 @@ final class ActivityReaders {
         1e6;
   }
 
+  bool _jsonlInTurn(String path, double now) {
+    if (!path.endsWith('.jsonl')) return false;
+    final stamp = written(path);
+    if (stamp == null || now - stamp > 1800) return false;
+    final source = files.text(path, limit: 64 * 1024, portion: 'tail') ?? '';
+    final markers = RegExp(
+      r'"type"\s*:\s*"(task_started|task_complete|turn_aborted)"',
+    ).allMatches(source).toList();
+    return markers.isNotEmpty && markers.last[1] == 'task_started';
+  }
+
   bool inTurn(int pid, double now) {
+    if (Platform.isMacOS &&
+        !files.identity.environment.containsKey('MAPRISMA_SCAN_PROC')) {
+      for (final path in macosProcessOpenFiles(pid, files.posix.uid)) {
+        if (_jsonlInTurn(path, now)) return true;
+      }
+      return false;
+    }
     for (final fd in files.list('${provider.proc}/$pid/fd', limit: 512)) {
       try {
         final path = Link(fd).targetSync();
-        if (!path.endsWith('.jsonl')) continue;
-        final stamp = written(path);
-        if (stamp == null || now - stamp > 1800) continue;
-        final source =
-            files.text(path, limit: 64 * 1024, portion: 'tail') ?? '';
-        final markers = RegExp(
-          r'"type"\s*:\s*"(task_started|task_complete|turn_aborted)"',
-        ).allMatches(source).toList();
-        if (markers.isNotEmpty && markers.last[1] == 'task_started') {
-          return true;
-        }
+        if (_jsonlInTurn(path, now)) return true;
       } on FileSystemException {
         /* closed or unavailable descriptor */
       }
@@ -123,15 +136,7 @@ final class ActivityReaders {
     }
     // subagents.agents_using_agents: an agent that started another one (directly
     // or through a shell, a script, a tool) and uses it: the map's arrows.
-    final using = agentsUsingAgents(pids, (pid) {
-      final stat = files.text('${provider.proc}/$pid/stat', limit: 1024);
-      if (stat == null || !stat.contains(')')) return 0;
-      final fields = stat
-          .substring(stat.lastIndexOf(')') + 1)
-          .trim()
-          .split(RegExp(r'\s+'));
-      return fields.length > 1 ? int.tryParse(fields[1]) ?? 0 : 0;
-    });
+    final using = agentsUsingAgents(pids, provider.parentPid);
     final now = scanNow(files),
         clock = elapsed.elapsedMicroseconds / 1e6,
         seen = <int, (int, double)>{},

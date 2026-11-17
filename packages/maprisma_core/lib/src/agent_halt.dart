@@ -3,14 +3,16 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'agent_catalog.dart';
 import 'core_tasks.dart';
+import 'macos_platform.dart' show macosProcessCwd, macosProcesses;
 import 'posix_ffi.dart';
 import 'provider_scans.dart';
 import 'pty_sessions.dart';
 
-/// agent_terminals: this account's processes, read from /proc.
+/// agent_terminals: this account's processes, read from /proc (Linux) or ps (macOS).
 const _ticks = 100; // SC_CLK_TCK on Linux
 
 List<String>? _statFields(int pid, Posix posix) {
+  if (Platform.isMacOS) return null;
   if (posix.lstatFull('/proc/$pid', follow: true)?.uid != posix.uid) {
     return null;
   }
@@ -28,6 +30,10 @@ List<String>? _statFields(int pid, Posix posix) {
 }
 
 int parentOf(int pid, Posix posix) {
+  if (Platform.isMacOS) {
+    final proc = macosProcesses().where((p) => p.pid == pid).firstOrNull;
+    return proc == null || proc.uid != posix.uid ? 0 : proc.ppid;
+  }
   final fields = _statFields(pid, posix);
   return fields == null || fields.length < 2 ? 0 : int.tryParse(fields[1]) ?? 0;
 }
@@ -44,7 +50,13 @@ List<int> ancestors(int pid, Posix posix) {
 }
 
 /// started: when it was started (seconds since the epoch), 0 unknown.
-double startedAt(int pid, Posix posix) {
+double startedAt(int pid, Posix posix, {bool fresh = false}) {
+  if (Platform.isMacOS) {
+    final proc = macosProcesses(
+      fresh: fresh,
+    ).where((p) => p.pid == pid).firstOrNull;
+    return proc == null || proc.uid != posix.uid ? 0.0 : proc.startedEpoch;
+  }
   final fields = _statFields(pid, posix);
   if (fields == null || fields.length < 20) return 0.0;
   try {
@@ -59,6 +71,7 @@ double startedAt(int pid, Posix posix) {
 }
 
 String cwdOf(int pid, Posix posix) {
+  if (Platform.isMacOS) return macosProcessCwd(pid, posix.uid);
   if (posix.lstatFull('/proc/$pid', follow: true)?.uid != posix.uid) return '';
   try {
     return Link('/proc/$pid/cwd').targetSync();
@@ -69,6 +82,13 @@ String cwdOf(int pid, Posix posix) {
 
 /// alive: this account's process runs and is still the one started then.
 bool aliveSince(int pid, double since, Posix posix) {
+  if (Platform.isMacOS) {
+    final proc = macosProcesses(
+      fresh: true,
+    ).where((p) => p.pid == pid).firstOrNull;
+    if (proc == null || proc.uid != posix.uid) return false;
+    return since == 0 || (proc.startedEpoch - since).abs() < 1.0;
+  }
   final fields = _statFields(pid, posix);
   if (fields == null || fields.isEmpty || fields[0] == 'Z') return false;
   return since == 0 || (startedAt(pid, posix) - since).abs() < 0.5 / _ticks;

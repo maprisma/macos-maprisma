@@ -1,11 +1,12 @@
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
-import 'process_group.dart' show ProcessGroup;
 import 'package:path/path.dart' as p;
 import 'connect_apply.dart';
 import 'desktop.dart' show shellJoin, shellQuote;
+import 'macos_platform.dart' show buildLaunchAgentPlist, macosLocalMounts;
 import 'posix_ffi.dart';
+import 'process_group.dart' show ProcessGroup, startInNewSession;
 import 'py_values.dart' show pyJsonDumps, pyTruthy;
 import 'system_reads.dart' show localMounts;
 
@@ -29,11 +30,7 @@ typedef StatInfo = ({
 
 final _posix = Posix();
 
-int _makedev(int major, int minor) =>
-    ((major & 0xfffff000) << 32) |
-    ((major & 0xfff) << 8) |
-    ((minor & 0xffffff00) << 12) |
-    (minor & 0xff);
+int _makedev(int major, int minor) => Posix.makeDev(major, minor);
 
 StatInfo? statOf(String path, {bool follow = true}) {
   final st = _posix.lstatFull(path, follow: follow);
@@ -55,8 +52,10 @@ bool _isLink(String path) => FileSystemEntity.isLinkSync(path);
 bool _within(String path, String root) =>
     path == root || p.isWithin(root, path);
 
-List<Map<String, String>> mounts([String? text]) =>
-    localMounts(text ?? File('/proc/self/mountinfo').readAsStringSync());
+List<Map<String, String>> mounts([String? text]) {
+  if (text == null && Platform.isMacOS) return macosLocalMounts();
+  return localMounts(text ?? File('/proc/self/mountinfo').readAsStringSync());
+}
 
 /// root_for: a real absolute folder on one of the mounts (the innermost).
 Map<String, String> rootFor(String path, List<Map<String, String>> available) {
@@ -130,11 +129,24 @@ String? safe(
       try {
         if (!_isReg(_posix.stat(fd).mode)) return null;
         final head = _posix.readAt(fd, 0, 4);
-        if (head.length != 4 ||
-            head[0] != 0x7f ||
-            head[1] != 0x45 ||
-            head[2] != 0x4c ||
-            head[3] != 0x46) {
+        final isElf =
+            head.length == 4 &&
+            head[0] == 0x7f &&
+            head[1] == 0x45 &&
+            head[2] == 0x4c &&
+            head[3] == 0x46;
+        final isMachO =
+            Platform.isMacOS &&
+            head.length == 4 &&
+            ((head[0] == 0xcf &&
+                    head[1] == 0xfa &&
+                    head[2] == 0xed &&
+                    head[3] == 0xfe) ||
+                (head[0] == 0xca &&
+                    head[1] == 0xfe &&
+                    head[2] == 0xba &&
+                    head[3] == 0xbe));
+        if (!isElf && !isMachO) {
           return null;
         }
       } finally {
@@ -601,14 +613,31 @@ List<(String, List<int>, bool)> serviceFiles(
   List<String> mountPaths,
   List<(String, String)> extra,
 ) {
-  final unit =
-      '[Unit]\nDescription=Maprisma connected local AI: ${record['name']}\nRequiresMountsFor='
-      '${mountPaths.toSet().map(unitArg).join(' ')}\n\n[Service]\nType=simple\nExecStart='
-      '${unitArg('.local/bin/$command', executable: true, home: true)}\nEnvironmentFile=%h/${extra.first.$1}\n'
-      'Restart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n';
+  final serviceEntry = Platform.isMacOS
+      ? (
+          '$home/Library/LaunchAgents/com.maprisma.$command.plist',
+          utf8.encode(
+            buildLaunchAgentPlist(
+              label: 'com.maprisma.$command',
+              programArguments: ['$home/.local/bin/$command'],
+              environment: {'MAPRISMA_ENV_FILE': '$home/${extra.first.$1}'},
+            ),
+          ),
+          false,
+        )
+      : (
+          '$home/.config/systemd/user/$command.service',
+          utf8.encode(
+            '[Unit]\nDescription=Maprisma connected local AI: ${record['name']}\nRequiresMountsFor='
+            '${mountPaths.toSet().map(unitArg).join(' ')}\n\n[Service]\nType=simple\nExecStart='
+            '${unitArg('.local/bin/$command', executable: true, home: true)}\nEnvironmentFile=%h/${extra.first.$1}\n'
+            'Restart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n',
+          ),
+          false,
+        );
   final files = <(String, List<int>, bool)>[
     ('$home/.local/bin/$command', utf8.encode(text), true),
-    ('$home/.config/systemd/user/$command.service', utf8.encode(unit), false),
+    serviceEntry,
     for (final (path, content) in extra)
       ('$home/$path', utf8.encode(content), false),
   ];
@@ -920,8 +949,7 @@ Future<Map<String, dynamic>> checkProgram(
       for (final e in (record['environment'] as Map).entries)
         '${e.key}': '${e.value}',
     };
-    final process = await Process.start(
-      '/usr/bin/setsid',
+    final process = await startInNewSession(
       [(record['launch_path'] ?? record['path']) as String, '--version'],
       environment: env,
       includeParentEnvironment: false,

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:maprisma_core/src/macos_platform.dart' show macosProcesses;
 import 'package:maprisma_core/src/model_hub.dart' show boundedOutput;
 import 'package:maprisma_core/src/process_group.dart';
 import 'package:test/test.dart';
@@ -16,6 +17,9 @@ sleep 60
 ''';
 
 bool _running(int pid) {
+  if (Platform.isMacOS) {
+    return macosProcesses(fresh: true).any((p) => p.pid == pid);
+  }
   try {
     final text = File('/proc/$pid/stat').readAsStringSync();
     return text.substring(text.lastIndexOf(')') + 2).split(' ').first != 'Z';
@@ -79,26 +83,14 @@ void main() {
   });
 
   test('endGroup: leader running, child ignoring SIGTERM', () async {
-    final process = await Process.start('setsid', [
-      '--',
-      'sh',
-      script,
-      pidfile,
-      'wait',
-    ]);
+    final process = await startInNewSession(['sh', script, pidfile, 'wait']);
     final child = await childPid();
     await endGroup(process, grace: const Duration(milliseconds: 300));
     await _gone(child);
   });
 
   test('endGroup: the leader ended first', () async {
-    final process = await Process.start('setsid', [
-      '--',
-      'sh',
-      script,
-      pidfile,
-      'exit',
-    ]);
+    final process = await startInNewSession(['sh', script, pidfile, 'exit']);
     final group = ProcessGroup(process.pid)..watch(); // as the callers do
     final child = await childPid();
     await process.exitCode;
@@ -113,12 +105,7 @@ void main() {
   test(
     'nothing found once no held member is left (a reused group id)',
     () async {
-      final process = await Process.start('setsid', [
-        '--',
-        'sh',
-        '-c',
-        'exit 0',
-      ]);
+      final process = await startInNewSession(['sh', '-c', 'exit 0']);
       final group = ProcessGroup(process.pid);
       await process.exitCode;
       await Future<void>.delayed(const Duration(milliseconds: 50));

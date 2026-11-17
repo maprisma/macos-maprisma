@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' show Random;
-import 'process_group.dart' show ProcessGroup;
+import 'process_group.dart' show ProcessGroup, startInNewSession;
 import 'package:crypto/crypto.dart' show sha256;
 import 'package:path/path.dart' as p;
 import 'package:toml/toml.dart';
@@ -275,7 +275,7 @@ void recordRun(
     final lock = posix.openAt(
       -100,
       '${p.withoutExtension(logPath)}.lock',
-      1 | 0x40 | Posix.noFollow,
+      Posix.wronly | Posix.creat | Posix.noFollow,
       0x180,
     );
     try {
@@ -717,8 +717,7 @@ Future<(List<int>, bool, bool)> runLookUp(
   Map<String, String> env,
   String cwd,
 ) async {
-  final process = await Process.start(
-    'setsid',
+  final process = await startInNewSession(
     argv,
     environment: env,
     includeParentEnvironment: false,

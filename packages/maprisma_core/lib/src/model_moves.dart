@@ -356,7 +356,7 @@ final class FileMover {
     final fd = posix.openAt(
       folder,
       partial,
-      1 | 0x40 | 0x80 | Posix.noFollow,
+      Posix.wronly | Posix.creat | Posix.excl | Posix.noFollow,
       0x180,
     );
     final made = posix.statAt(fd, '')!;

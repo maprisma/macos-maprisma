@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'process_group.dart' show ProcessGroup;
+import 'process_group.dart' show ProcessGroup, startInNewSession;
 
 import 'package:path/path.dart' as p;
 
@@ -35,8 +35,7 @@ Future<Map<String, dynamic>?> askPlanLimits(
   final binary = program;
   final Process process;
   try {
-    process = await Process.start(
-      'setsid',
+    process = await startInNewSession(
       [binary, ...argv.skip(1)],
       environment: env,
       includeParentEnvironment: false,

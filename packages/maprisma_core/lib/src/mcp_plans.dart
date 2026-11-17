@@ -10,6 +10,7 @@ import 'agent_details.dart' show dig;
 import 'connect_apply.dart';
 import 'dsh_profile.dart';
 import 'local_llm.dart';
+import 'macos_platform.dart' show claudeDesktopConfigPath;
 import 'py_values.dart';
 import 'scan_files.dart';
 import 'skill_plans.dart' show AgentProfiles;
@@ -212,6 +213,14 @@ final class McpPlans {
     if (s == null && catalog.adapter(agent) == null && agent == 'lmstudio') {
       s = {
         'path': '~/.lmstudio/mcp.json',
+        'format': 'json',
+        'key': 'mcpServers',
+      };
+    } else if (s == null &&
+        catalog.adapter(agent) == null &&
+        (agent == 'claude-desktop' || agent == 'claude_desktop')) {
+      s = {
+        'path': claudeDesktopConfigPath(home),
         'format': 'json',
         'key': 'mcpServers',
       };

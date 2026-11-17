@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'task_card.dart';
 
 const _buildNames = {
+  'metal': 'Metal',
   'rocm': 'ROCm',
   'vulkan': 'Vulkan',
   'cuda': 'CUDA',

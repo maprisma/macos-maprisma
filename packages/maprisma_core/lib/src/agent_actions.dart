@@ -12,6 +12,7 @@ import 'settings.dart';
 /// step for this PC. Only plain words are started (in a terminal the user
 /// watches); anything else is only shown, to copy.
 const _managers = {
+  'brew': (['brew', 'install'], ['brew', 'uninstall']),
   'pacman': (['pacman', '-S', '--needed'], ['pacman', '-R']),
   'apt': (['apt', 'install'], ['apt', 'remove']),
   'dnf': (['dnf', 'install'], ['dnf', 'remove']),
@@ -96,6 +97,16 @@ final class Recipes {
       );
     }
     if (kind == 'package' && _packages(way)[manager()] != null) {
+      final m = manager();
+      final pkg = '${_packages(way)[m]}';
+      if (m == 'brew' && _package.hasMatch(pkg)) {
+        final argv = ['brew', 'upgrade', pkg];
+        return Step(
+          'package',
+          commands: [shellJoin(argv)],
+          run: runnable([argv]),
+        );
+      }
       return Step('manual', note: "It comes with the system's updates.");
     }
     return null;
@@ -145,8 +156,9 @@ final class Recipes {
     if (kind == 'package') {
       final m = manager(), name = _packages(way)[m];
       if (m.isEmpty || name is! String || !_package.hasMatch(name)) return null;
+      final useSudo = m != 'brew';
       final words = [
-        'sudo',
+        if (useSudo) 'sudo',
         ...(remove ? _managers[m]!.$2 : _managers[m]!.$1),
         name,
       ];
@@ -154,7 +166,7 @@ final class Recipes {
         'package',
         commands: [shellJoin(words)],
         run: runnable([words]),
-        sudo: true,
+        sudo: useSudo,
       );
     }
     if (kind == 'manual') {
@@ -225,7 +237,7 @@ final class Recipes {
           if (_managers.containsKey(e.key)) {
             commands.add(
               shellJoin([
-                'sudo',
+                if (e.key != 'brew') 'sudo',
                 ...(action == 'uninstall'
                     ? _managers[e.key]!.$2
                     : _managers[e.key]!.$1),

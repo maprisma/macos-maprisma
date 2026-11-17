@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'package:maprisma/help_view.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -33,7 +34,12 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('help-manual')));
     await tester.pump();
     expect(opened, 1);
-    expect(find.text('Could not open the manual: xdg-open'), findsOneWidget);
+    expect(
+      find.text(
+        'Could not open the manual: ${Platform.isMacOS ? 'open' : 'xdg-open'}',
+      ),
+      findsOneWidget,
+    );
     works = true;
     await tester.tap(find.byKey(const ValueKey('help-manual')));
     await tester.pump();

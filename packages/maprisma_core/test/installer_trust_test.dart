@@ -67,7 +67,8 @@ void main() {
     try {
       File('${root.path}/evil').writeAsStringSync('other bytes');
       File('${root.path}/evil').renameSync(file.path);
-      expect(File('/proc/$pid/fd/$fd').readAsStringSync(), 'verified bytes');
+      final fdPath = Platform.isMacOS ? '/dev/fd/$fd' : '/proc/$pid/fd/$fd';
+      expect(File(fdPath).readAsStringSync(), 'verified bytes');
     } finally {
       posix.close(fd);
     }

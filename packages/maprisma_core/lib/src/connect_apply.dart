@@ -290,7 +290,11 @@ final class ConfigFiles {
       final fd = posix.openAt(
         -100,
         path,
-        1 | 0x40 | 0x80 | Posix.noFollow | Posix.cloexec,
+        Posix.wronly |
+            Posix.creat |
+            Posix.excl |
+            Posix.noFollow |
+            Posix.cloexec,
         executable ? 0x1ed : 0x1a4,
       );
       try {

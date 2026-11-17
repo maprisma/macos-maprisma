@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'task_card.dart';
 
@@ -55,7 +56,9 @@ class _HelpViewState extends State<HelpView> {
     setState(
       () => _error = opened
           ? null
-          : tr('Could not open the manual: {0}').replaceAll('{0}', 'xdg-open'),
+          : tr(
+              'Could not open the manual: {0}',
+            ).replaceAll('{0}', Platform.isMacOS ? 'open' : 'xdg-open'),
     );
   }
 

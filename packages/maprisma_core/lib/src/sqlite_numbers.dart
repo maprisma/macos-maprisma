@@ -91,7 +91,24 @@ Uint8List committedImage(Uint8List base, Uint8List? wal) {
 final class SqliteNumbers {
   SqliteNumbers(this.files);
   final ScanFiles files;
-  static final _lib = DynamicLibrary.open('libsqlite3.so.0');
+  static DynamicLibrary _openSqlite() {
+    if (Platform.isMacOS) {
+      for (final candidate in const [
+        '/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib',
+        '/usr/lib/libsqlite3.dylib',
+        'libsqlite3.dylib',
+      ]) {
+        try {
+          return DynamicLibrary.open(candidate);
+        } on ArgumentError {
+          continue;
+        }
+      }
+    }
+    return DynamicLibrary.open('libsqlite3.so.0');
+  }
+
+  static final _lib = _openSqlite();
   static final _open = _lib
       .lookupFunction<
         Int Function(Pointer<Utf8>, Pointer<Pointer<Void>>, Int, Pointer<Utf8>),

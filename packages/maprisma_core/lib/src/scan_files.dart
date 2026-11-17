@@ -17,7 +17,9 @@ final class ScanFiles {
     '.credentials.json',
     'credentials.json',
   };
-  static final _libc = DynamicLibrary.open('libc.so.6');
+  static final _libc = Platform.isMacOS
+      ? DynamicLibrary.process()
+      : DynamicLibrary.open('libc.so.6');
   static final _fdopendir = _libc
       .lookupFunction<Pointer<Void> Function(Int), Pointer<Void> Function(int)>(
         'fdopendir',
@@ -26,7 +28,7 @@ final class ScanFiles {
       .lookupFunction<
         Pointer<Uint8> Function(Pointer<Void>),
         Pointer<Uint8> Function(Pointer<Void>)
-      >('readdir');
+      >(Abi.current() == Abi.macosX64 ? 'readdir\$INODE64' : 'readdir');
   static final _closedir = _libc
       .lookupFunction<Int Function(Pointer<Void>), int Function(Pointer<Void>)>(
         'closedir',
@@ -186,12 +188,24 @@ List<String> listDirectory(
       final record = ScanFiles._readdir(directory);
       if (record == nullptr) break;
       final length = (record + 16).cast<Uint16>().value;
-      if (length < 20 || length > 4096) break;
-      final data = (record + 19).asTypedList(length - 19);
-      final end = data.indexOf(0);
-      if (end < 0) break;
-      final name = utf8.decode(data.sublist(0, end), allowMalformed: true);
-      if (name != '.' && name != '..') result.add(p.join(path, name));
+      final String name;
+      if (Platform.isMacOS) {
+        // Darwin 64-bit struct dirent: d_reclen (u16@16), d_namlen (u16@18),
+        // d_type (u8@20), d_name (char[]@21).
+        final namlen = (record + 18).cast<Uint16>().value;
+        if (length < 22 || length > 4096 || 21 + namlen > length) break;
+        final data = (record + 21).asTypedList(namlen);
+        name = utf8.decode(data, allowMalformed: true);
+      } else {
+        if (length < 20 || length > 4096) break;
+        final data = (record + 19).asTypedList(length - 19);
+        final end = data.indexOf(0);
+        if (end < 0) break;
+        name = utf8.decode(data.sublist(0, end), allowMalformed: true);
+      }
+      if (name.isNotEmpty && name != '.' && name != '..') {
+        result.add(p.join(path, name));
+      }
     }
     return result;
   } on FileSystemException {

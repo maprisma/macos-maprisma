@@ -3,6 +3,7 @@ import 'package:path/path.dart' as p;
 import 'adapter_assets.g.dart' show providerFacts;
 import 'desktop.dart' show whichIn;
 import 'installers.dart' show detectGpu;
+import 'macos_platform.dart' show macosHardwareInfo;
 import 'posix_ffi.dart';
 import 'provider_facts.dart' show visibleProviderFacts;
 import 'py_values.dart' show pyCompare;
@@ -144,12 +145,16 @@ String firstLocalLlm() {
 Future<Map<String, dynamic>> pcInfo(List<String> modelDirs, String home) async {
   final gpu = await detectGpu();
   var ram = 0;
-  try {
-    final text = File('/proc/meminfo').readAsStringSync();
-    final m = RegExp(r'^MemTotal:\s+(\d+)', multiLine: true).firstMatch(text);
-    if (m != null) ram = int.parse(m[1]!) * 1024;
-  } on Object {
-    ram = 0;
+  if (Platform.isMacOS) {
+    ram = macosHardwareInfo().ram;
+  } else {
+    try {
+      final text = File('/proc/meminfo').readAsStringSync();
+      final m = RegExp(r'^MemTotal:\s+(\d+)', multiLine: true).firstMatch(text);
+      if (m != null) ram = int.parse(m[1]!) * 1024;
+    } on Object {
+      ram = 0;
+    }
   }
   final free = <String, int>{};
   final posix = Posix();

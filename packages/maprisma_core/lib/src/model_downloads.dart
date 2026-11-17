@@ -153,10 +153,10 @@ final class ModelFiles {
   /// install_ctl.open_staging: created new (exclusive, no-follow) or, to
   /// resume, this account's own regular file with one name.
   int openStaging(String partial) {
-    const flags = 0x2 | 0x400 | Posix.noFollow | Posix.cloexec;
+    final flags = Posix.rdwr | Posix.append | Posix.noFollow | Posix.cloexec;
     try {
       return _locked(
-        posix.openAt(-100, partial, flags | 0x40 | 0x80, 0x1a4),
+        posix.openAt(-100, partial, flags | Posix.creat | Posix.excl, 0x1a4),
         partial,
       );
     } on FileSystemException {
@@ -350,6 +350,7 @@ final class ModelFiles {
       offset += block.length;
     }
     input.close();
+    posix.rewind(fd);
     return chunks.single.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 

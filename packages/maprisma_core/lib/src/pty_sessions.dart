@@ -5,21 +5,16 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import 'core_tasks.dart' show newHandle;
+import 'macos_platform.dart' show macosProcesses;
+import 'posix_ffi.dart';
 
-/// terminal_sessions: owned PTY sessions (Linux). Only the service supplies
-/// argv from a registered adapter; no shell, no transcript, bounded reads.
-///
-/// Dart cannot fork, so an agent is started with posix_spawn: a new session
-/// (SETSID), signals back to their defaults and none blocked (the Dart VM
-/// ignores SIGPIPE), the PTY's slave opened as fd 0 (a session leader opening
-/// a terminal takes it as its controlling terminal), fd 1 and 2 copies of
-/// it, the project folder as its working folder and every other descriptor
-/// closed. Each agent is held by a pidfd: Dart's own process thread may reap
-/// a child that is not its own, so the group is never signalled by number
-/// (killpg) — the leader and its remembered group members are signalled
-/// through pidfds after their start time is checked.
+/// terminal_sessions: owned PTY sessions (Linux & macOS). Only the service
+/// supplies argv from a registered adapter; no shell, no transcript, bounded
+/// reads.
 
-final _libc = DynamicLibrary.open('libc.so.6');
+final _libc = Platform.isMacOS
+    ? DynamicLibrary.process()
+    : DynamicLibrary.open('libc.so.6');
 final _openpt = _libc.lookupFunction<Int Function(Int), int Function(int)>(
   'posix_openpt',
 );
@@ -39,6 +34,11 @@ final _ioctl = _libc
       Int Function(Int, UnsignedLong, VarArgs<(Pointer<Void>,)>),
       int Function(int, int, Pointer<Void>)
     >('ioctl');
+final _fcntlSet = _libc
+    .lookupFunction<
+      Int Function(Int, Int, VarArgs<(Int,)>),
+      int Function(int, int, int)
+    >('fcntl');
 final _close = _libc.lookupFunction<Int Function(Int), int Function(int)>(
   'close',
 );
@@ -59,7 +59,7 @@ final _poll = _libc
     >('poll');
 final _errno = _libc
     .lookupFunction<Pointer<Int> Function(), Pointer<Int> Function()>(
-      '__errno_location',
+      Platform.isMacOS ? '__error' : '__errno_location',
     );
 final _spawn = _libc
     .lookupFunction<
@@ -139,11 +139,11 @@ final _sigEmpty = _libc
     .lookupFunction<Int Function(Pointer<Void>), int Function(Pointer<Void>)>(
       'sigemptyset',
     );
-final _pidfdOpen = _libc
+final _linuxPidfdOpen = _libc
     .lookupFunction<Int Function(Int, Uint32), int Function(int, int)>(
       'pidfd_open',
     );
-final _pidfdSend = _libc
+final _linuxPidfdSend = _libc
     .lookupFunction<
       Int Function(Int, Int, Pointer<Void>, Uint32),
       int Function(int, int, Pointer<Void>, int)
@@ -153,13 +153,50 @@ final _waitid = _libc
       Int Function(Int, Int32, Pointer<Uint8>, Int),
       int Function(int, int, Pointer<Uint8>, int)
     >('waitid');
+final _waitpid = _libc
+    .lookupFunction<
+      Int Function(Int, Pointer<Int32>, Int),
+      int Function(int, Pointer<Int32>, int)
+    >('waitpid');
 
-const _eagain = 11, _eio = 5;
-const _oRdwr = 0x2, _oNoctty = 0x100, _oNonblock = 0x800, _oCloexec = 0x80000;
-const _tiocswinsz = 0x5414;
-const _spawnSetsigdef = 0x04, _spawnSetsigmask = 0x08, _spawnSetsid = 0x80;
-const _pPidfd = 3, _wExited = 4, _wNohang = 1, _wNowait = 0x01000000;
-const _sighup = 1, _sigterm = 15, _sigkill = 9;
+final int _eagain = Platform.isMacOS ? 35 : 11;
+const int _eio = 5;
+const int _oRdwr = 0x2;
+final int _oNoctty = Platform.isMacOS ? 0x20000 : 0x100;
+final int _oNonblock = Platform.isMacOS ? 0x0004 : 0x800;
+final int _oCloexec = Platform.isMacOS ? 0x1000000 : 0x80000;
+// TIOCSWINSZ: 0x80087467 on Darwin (_IOW('t', 103, struct winsize)), 0x5414 on Linux.
+final int _tiocswinsz = Platform.isMacOS ? 0x80087467 : 0x5414;
+const int _spawnSetsigdef = 0x04, _spawnSetsigmask = 0x08;
+// POSIX_SPAWN_SETSID is 0x0400 on Darwin (0x0080 is START_SUSPENDED on Darwin!)
+// and POSIX_SPAWN_CLOEXEC_DEFAULT is 0x4000 on Darwin.
+final int _spawnSetsid = Platform.isMacOS ? 0x0400 : 0x80;
+const int _darwinSpawnCloexecDefault = 0x4000;
+const int _pPidfd = 3, _wExited = 4, _wNohang = 1, _wNowait = 0x01000000;
+const int _sighup = 1, _sigterm = 15, _sigkill = 9;
+
+final _posix = Posix();
+
+int _procOpen(int pid) =>
+    Platform.isMacOS ? _posix.pidfdOpen(pid) : _linuxPidfdOpen(pid, 0);
+
+void _procSend(int fd, int sig) {
+  if (Platform.isMacOS) {
+    _posix.pidfdSignal(fd, sig);
+  } else {
+    _linuxPidfdSend(fd, sig, nullptr, 0);
+  }
+}
+
+void _procClose(int fd) {
+  if (Platform.isMacOS) {
+    try {
+      _posix.close(fd);
+    } catch (_) {}
+  } else {
+    _close(fd);
+  }
+}
 
 void _setSize(int fd, int rows, int cols) {
   final size = calloc<Uint16>(4);
@@ -174,7 +211,7 @@ void _setSize(int fd, int rows, int cols) {
   }
 }
 
-/// A pidfd is readable once its process has exited.
+/// Both Linux pidfd and macOS EVFILT_PROC kqueue become readable once exited.
 bool _exited(int fd, {int waitMs = 0}) {
   final entry = calloc<Int32>(2);
   try {
@@ -186,8 +223,16 @@ bool _exited(int fd, {int waitMs = 0}) {
   }
 }
 
-/// (process group, session, start time) of a process, from /proc.
+/// (process group, session, start time) of a process, from /proc (Linux) or
+/// ps (macOS).
 (int, int, String)? processIdentity(int pid) {
+  if (Platform.isMacOS) {
+    final proc = macosProcesses(
+      fresh: true,
+    ).where((p) => p.pid == pid).firstOrNull;
+    if (proc == null) return null;
+    return (proc.pgid, proc.pgid, '${proc.startedEpoch.round()}');
+  }
   try {
     final text = File('/proc/$pid/stat').readAsStringSync();
     final fields = text
@@ -203,6 +248,15 @@ bool _exited(int fd, {int waitMs = 0}) {
 /// _group_members: the processes of this leader's group and session.
 Map<int, String> groupMembers(int leader) {
   final found = <int, String>{};
+  if (Platform.isMacOS) {
+    for (final proc in macosProcesses(fresh: true)) {
+      if (proc.pid == leader) continue;
+      if (proc.pgid == leader) {
+        found[proc.pid] = '${proc.startedEpoch.round()}';
+      }
+    }
+    return found;
+  }
   List<FileSystemEntity> entries;
   try {
     entries = Directory('/proc').listSync();
@@ -275,10 +329,20 @@ final class PtySessions {
     if (items.length >= 32) {
       throw const FormatException('Too many terminal sessions');
     }
-    final master = _openpt(_oRdwr | _oNoctty | _oNonblock | _oCloexec);
+    // On Darwin, posix_openpt accepts only O_RDWR | O_NOCTTY; O_NONBLOCK and
+    // FD_CLOEXEC are applied via fcntl afterwards.
+    final master = Platform.isMacOS
+        ? _openpt(_oRdwr | _oNoctty)
+        : _openpt(_oRdwr | _oNoctty | _oNonblock | _oCloexec);
     if (master < 0) throw const FileSystemException('No terminal available');
     final arena = Arena();
     try {
+      if (Platform.isMacOS) {
+        if (_fcntlSet(master, 2 /* F_SETFD */, 1 /* FD_CLOEXEC */) < 0 ||
+            _fcntlSet(master, 4 /* F_SETFL */, _oRdwr | _oNonblock) < 0) {
+          throw const FileSystemException('No terminal available');
+        }
+      }
       final name = arena<Uint8>(256).cast<Utf8>();
       if (_grantpt(master) != 0 ||
           _unlockpt(master) != 0 ||
@@ -295,16 +359,19 @@ final class PtySessions {
       try {
         _sigFill(all);
         _sigEmpty(none);
+        final spawnFlags =
+            _spawnSetsid |
+            _spawnSetsigdef |
+            _spawnSetsigmask |
+            (Platform.isMacOS ? _darwinSpawnCloexecDefault : 0);
+        final closeOtherFdsOk =
+            Platform.isMacOS || _faCloseFrom(actions, 3) == 0;
         if (_faOpen(actions, 0, name, _oRdwr, 0) != 0 ||
             _faDup2(actions, 0, 1) != 0 ||
             _faDup2(actions, 0, 2) != 0 ||
             _faChdir(actions, cwd.toNativeUtf8(allocator: arena)) != 0 ||
-            _faCloseFrom(actions, 3) != 0 ||
-            _attrFlags(
-                  attr,
-                  _spawnSetsid | _spawnSetsigdef | _spawnSetsigmask,
-                ) !=
-                0 ||
+            !closeOtherFdsOk ||
+            _attrFlags(attr, spawnFlags) != 0 ||
             _attrSigDefault(attr, all) != 0 ||
             _attrSigMask(attr, none) != 0) {
           throw const FileSystemException('The agent could not be started');
@@ -334,7 +401,7 @@ final class PtySessions {
             OSError('', error),
           );
         }
-        final pidfd = _pidfdOpen(pid.value, 0);
+        final pidfd = _procOpen(pid.value);
         final session = PtySession(pid.value, pidfd, master, command, cwd);
         final ident = newHandle();
         items[ident] = session;
@@ -375,13 +442,25 @@ final class PtySessions {
   }
 
   /// The exit code once the leader has ended (a signal as its negative), else
-  /// null. While the ended leader is still our unreaped child it anchors its
-  /// group, which is remembered first (WNOWAIT), then it is reaped. Reaped by
-  /// another waiter already (Dart's own process thread): -1, its code unknown.
+  /// null.
   int? poll(PtySession session) {
     if (session.code != null) return session.code;
     if (session.pidfd < 0) return session.code = -1;
     if (!_exited(session.pidfd)) return null;
+    if (Platform.isMacOS) {
+      session.children.addAll(groupMembers(session.pid));
+      final statusPtr = calloc<Int32>();
+      try {
+        final r = _waitpid(session.pid, statusPtr, _wNohang);
+        if (r != session.pid) return session.code = -1;
+        session.reaped = true;
+        final status = statusPtr.value;
+        final sig = status & 0x7f;
+        return session.code = sig == 0 ? ((status >> 8) & 0xff) : -sig;
+      } finally {
+        calloc.free(statusPtr);
+      }
+    }
     final info = calloc<Uint8>(128);
     try {
       int? wait(int flags) {
@@ -433,9 +512,6 @@ final class PtySessions {
         calloc.free(buffer);
       }
     }
-    // Dart's own process thread may reap the leader before we do, and then
-    // its group cannot be scanned safely any more: while the leader runs,
-    // its group is remembered (at most once a second).
     final now = DateTime.now();
     if (session.code == null &&
         (session.groupSeen == null ||
@@ -493,17 +569,15 @@ final class PtySessions {
     return {};
   }
 
-  /// Signal the leader (by its pidfd) and the group members still known by
-  /// their start time (each by a pidfd opened and checked first).
   void _signalGroup(PtySession session, int signal) {
-    if (session.pidfd >= 0) _pidfdSend(session.pidfd, signal, nullptr, 0);
+    if (session.pidfd >= 0) _procSend(session.pidfd, signal);
     for (final e in groupMembers(session.pid).entries) {
-      final fd = _pidfdOpen(e.key, 0);
+      final fd = _procOpen(e.key);
       if (fd < 0) continue;
       if (processIdentity(e.key) == (session.pid, session.pid, e.value)) {
-        _pidfdSend(fd, signal, nullptr, 0);
+        _procSend(fd, signal);
       }
-      _close(fd);
+      _procClose(fd);
     }
   }
 
@@ -511,17 +585,17 @@ final class PtySessions {
     final handles = <int>[];
     try {
       for (final e in session.children.entries) {
-        final fd = _pidfdOpen(e.key, 0);
+        final fd = _procOpen(e.key);
         if (fd < 0) continue;
         if (processIdentity(e.key) == (session.pid, session.pid, e.value)) {
           handles.add(fd);
         } else {
-          _close(fd);
+          _procClose(fd);
         }
       }
       for (final signal in [_sighup, _sigterm, _sigkill]) {
         for (final fd in handles) {
-          _pidfdSend(fd, signal, nullptr, 0);
+          _procSend(fd, signal);
         }
         final until = DateTime.now().add(const Duration(milliseconds: 200));
         final ready = <int>{};
@@ -530,14 +604,14 @@ final class PtySessions {
           if (_exited(fd, waitMs: math.max(0, left))) ready.add(fd);
         }
         for (final fd in ready) {
-          _close(fd);
+          _procClose(fd);
         }
         handles.removeWhere(ready.contains);
         if (handles.isEmpty) break;
       }
     } finally {
       for (final fd in handles) {
-        _close(fd);
+        _procClose(fd);
       }
     }
   }
@@ -545,8 +619,6 @@ final class PtySessions {
   Map<String, dynamic> stop(String ident) {
     final session = items.remove(ident)!;
     try {
-      // A completed tab may stay open for hours: its group is only reached
-      // through members still known by their start time.
       if (poll(session) != null) {
         _refreshGroup(session);
         return {};
@@ -563,7 +635,7 @@ final class PtySessions {
         _stopChildren(session);
       } finally {
         _close(session.master);
-        if (session.pidfd >= 0) _close(session.pidfd);
+        if (session.pidfd >= 0) _procClose(session.pidfd);
       }
     }
     return {};

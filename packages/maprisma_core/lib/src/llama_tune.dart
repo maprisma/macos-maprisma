@@ -5,6 +5,7 @@ import 'provider_ops.dart' show withHttpDeadline;
 import 'package:path/path.dart' as p;
 import 'context.dart';
 import 'desktop.dart' show whichIn;
+import 'macos_platform.dart' show macosHardwareInfo, parseLaunchAgentPlist;
 import 'model_hub.dart' show boundedOutput;
 
 /// llama_tune (task 029): each llama.cpp model measured on this card with
@@ -145,30 +146,62 @@ final class LlamaTuner {
     var binary = '';
     var pid = 0;
     final env = {...environment};
-    final (shown, _) = await run(
-      [
-        whichIn('systemctl', environment['PATH']) ?? 'systemctl',
-        '--user',
-        'show',
-        'llama-server',
-        '--property=ExecStart,Environment,EnvironmentFiles,MainPID',
-      ],
-      environment,
-      const Duration(seconds: 10),
-    );
-    for (final line in const LineSplitter().convert(shown)) {
-      if (line.startsWith('ExecStart=')) {
-        binary = RegExp(r'path=([^ ;]+)').firstMatch(line)?.group(1) ?? '';
-      } else if (line.startsWith('MainPID=')) {
-        pid = int.tryParse(line.substring('MainPID='.length).trim()) ?? 0;
-      } else if (line.startsWith('EnvironmentFiles=')) {
-        for (final file in RegExp(
-          r'(/\S+) \(ignore_errors=\w+\)',
-        ).allMatches(line)) {
-          env.addAll(envFile(file.group(1)!));
+    if (Platform.isMacOS && proc == '/proc' && sysfs == '/sys/class/drm') {
+      for (final candidate in [
+        '$home/Library/LaunchAgents/com.maprisma.llama-server.plist',
+        '$home/Library/LaunchAgents/homebrew.mxcl.llama.cpp.plist',
+        '$home/Library/LaunchAgents/llama-server.plist',
+      ]) {
+        if (!File(candidate).existsSync()) continue;
+        try {
+          final parsed = parseLaunchAgentPlist(
+            File(candidate).readAsStringSync(),
+          );
+          final foundBin = parsed.programArguments
+              .where((a) => p.basename(a) == 'llama-server')
+              .firstOrNull;
+          if (foundBin != null) {
+            binary = foundBin;
+          } else if (parsed.programArguments.isNotEmpty) {
+            binary = parsed.programArguments.first;
+          }
+          env.addAll(parsed.environment);
+          final ef = parsed.environment['MAPRISMA_ENV_FILE'];
+          if (ef != null && ef.isNotEmpty) env.addAll(envFile(ef));
+          break;
+        } on FileSystemException {
+          continue;
         }
-      } else if (line.startsWith('Environment=')) {
-        env.addAll(unitEnvironment(line.substring('Environment='.length)));
+      }
+      if (File('$home/.config/llama.cpp/server.env').existsSync()) {
+        env.addAll(envFile('$home/.config/llama.cpp/server.env'));
+      }
+    } else {
+      final (shown, _) = await run(
+        [
+          whichIn('systemctl', environment['PATH']) ?? 'systemctl',
+          '--user',
+          'show',
+          'llama-server',
+          '--property=ExecStart,Environment,EnvironmentFiles,MainPID',
+        ],
+        environment,
+        const Duration(seconds: 10),
+      );
+      for (final line in const LineSplitter().convert(shown)) {
+        if (line.startsWith('ExecStart=')) {
+          binary = RegExp(r'path=([^ ;]+)').firstMatch(line)?.group(1) ?? '';
+        } else if (line.startsWith('MainPID=')) {
+          pid = int.tryParse(line.substring('MainPID='.length).trim()) ?? 0;
+        } else if (line.startsWith('EnvironmentFiles=')) {
+          for (final file in RegExp(
+            r'(/\S+) \(ignore_errors=\w+\)',
+          ).allMatches(line)) {
+            env.addAll(envFile(file.group(1)!));
+          }
+        } else if (line.startsWith('Environment=')) {
+          env.addAll(unitEnvironment(line.substring('Environment='.length)));
+        }
       }
     }
     final running = pid > 0 ? _process(pid) : null;
@@ -263,6 +296,10 @@ final class LlamaTuner {
 
   /// The card with the most video memory: (total, used) in bytes, or null.
   (int, int)? vram() {
+    if (Platform.isMacOS && sysfs == '/sys/class/drm') {
+      final hw = macosHardwareInfo(includeIoreg: true);
+      return hw.vram > 0 ? (hw.vram, hw.vramUsed) : null;
+    }
     (int, int)? best;
     try {
       for (final e in Directory(sysfs).listSync()) {

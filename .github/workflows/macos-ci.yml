@@ -1,0 +1,56 @@
+name: macOS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    name: Build & Test (macOS Apple Silicon)
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter (stable)
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Enable Flutter macOS desktop
+        run: flutter config --enable-macos-desktop
+
+      - name: Analyze & test maprisma_core
+        working-directory: packages/maprisma_core
+        run: |
+          dart pub get
+          dart analyze
+          dart test
+
+      - name: Analyze & test flutter_app
+        working-directory: flutter_app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+      - name: Build & ad-hoc sign Maprisma.app
+        run: ./build-mac.sh
+
+      - name: Archive Maprisma.app artifact
+        run: |
+          cd dist
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent Maprisma.app Maprisma-macos-arm64.zip
+
+      - name: Upload Maprisma.app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maprisma-macos-arm64
+          path: dist/Maprisma-macos-arm64.zip
+          if-no-files-found: error

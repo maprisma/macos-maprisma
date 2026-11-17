@@ -179,7 +179,7 @@ final class _PrivateFolder {
     final out = _posix.openAt(
       _fd,
       name,
-      1 | 0x40 | 0x80 | Posix.noFollow,
+      Posix.wronly | Posix.creat | Posix.excl | Posix.noFollow,
       0x180,
     );
     var ok = false;

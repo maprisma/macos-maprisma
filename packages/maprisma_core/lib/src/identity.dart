@@ -1,9 +1,27 @@
 import 'dart:io';
 import 'package:path/path.dart' as p;
+import 'macos_platform.dart' show augmentMacosPath;
 
 final class AppIdentity {
   AppIdentity({Map<String, String>? environment})
-    : environment = Map.unmodifiable(environment ?? Platform.environment);
+    : environment = Map.unmodifiable(_prepareEnvironment(environment));
+
+  static Map<String, String> _prepareEnvironment(
+    Map<String, String>? explicit,
+  ) {
+    final base = explicit ?? Platform.environment;
+    // Augment PATH on macOS when inheriting the process environment (e.g. a
+    // GUI Maprisma.app bundle launched from Finder/Spotlight/Dock) or when
+    // explicitly requested via MAPRISMA_AUGMENT_PATH=1, while leaving isolated
+    // unit-test environments untouched.
+    if (Platform.isMacOS &&
+        (explicit == null || explicit['MAPRISMA_AUGMENT_PATH'] == '1')) {
+      final home = base['HOME'] ?? '/';
+      return {...base, 'PATH': augmentMacosPath(base['PATH'], home)};
+    }
+    return base;
+  }
+
   final Map<String, String> environment;
   String get home => environment['HOME'] ?? '/';
 
@@ -29,13 +47,17 @@ final class AppIdentity {
       p.join(root('XDG_STATE_HOME', '.local/state'), shortName);
 }
 
-/// The installed app's folder (its bundle): the folder of the app's
-/// program, also when the core's helper in `bundle/lib` asks, so both find
-/// the add-ons and manuals that come with the package (`bundle/addons`,
-/// `bundle/data`).
+/// The installed app's folder (its bundle): on Linux, the folder of the app's
+/// program (or parent of `lib/maprisma-core`); on macOS `.app` bundles
+/// (`Contents/MacOS/<exe>`), `Contents/Resources` when present so bundled
+/// manuals (`data/`) and add-ons (`addons/`) live in standard macOS Resources.
 String appFolder([String? executable]) {
   final exe = executable ?? Platform.resolvedExecutable;
   final dir = p.dirname(exe);
+  if (p.basename(dir) == 'MacOS' && p.basename(p.dirname(dir)) == 'Contents') {
+    final resources = p.join(p.dirname(dir), 'Resources');
+    if (Directory(resources).existsSync()) return resources;
+  }
   return p.basename(exe) == 'maprisma-core' && p.basename(dir) == 'lib'
       ? p.dirname(dir)
       : dir;

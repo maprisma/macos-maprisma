@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'model_hub.dart' show boundedOutput;
 
@@ -26,6 +27,22 @@ Future<String?> boundedClipboardText({
   )?
   run,
 }) async {
+  if (Platform.isMacOS && run == null) {
+    final (data, ok) = await boundedOutput(
+      const ['/usr/bin/pbpaste'],
+      maxBytes: maxBytes,
+      timeout: timeout,
+    );
+    if (!ok) return null;
+    final text = utf8
+        .decode(data, allowMalformed: true)
+        .replaceAll('\r\n', '\n');
+    return String.fromCharCodes(
+      text.runes.where(
+        (c) => c == 10 || c == 9 || !(c < 32 || (c >= 127 && c < 160)),
+      ),
+    );
+  }
   final read =
       run ??
       (List<String> argv, int max, Duration t) =>

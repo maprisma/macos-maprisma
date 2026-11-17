@@ -56,6 +56,10 @@ bool _globAny(String folder, bool Function(String name) match) {
 /// files are there).
 List<String> stacksHere(String? path) {
   final found = <String>[];
+  if (Platform.isMacOS) {
+    found.add('Metal');
+    return found;
+  }
   bool hip(String folder) =>
       _globAny(folder, (n) => n.startsWith('libamdhip64.so'));
   final rocm = [
@@ -109,7 +113,12 @@ Future<(String, String)> llamaDevices(String? path) async {
             .replaceAll(RegExp(r'\d+$'), '')
             .toLowerCase();
   final build =
-      const {'rocm': 'rocm', 'vulkan': 'vulkan', 'cuda': 'cuda'}[first] ??
+      const {
+        'rocm': 'rocm',
+        'vulkan': 'vulkan',
+        'cuda': 'cuda',
+        'metal': 'metal',
+      }[first] ??
       (out.isNotEmpty ? 'cpu' : '');
   return (build, lines.take(4).join('\n'));
 }

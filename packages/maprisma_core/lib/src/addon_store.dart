@@ -441,7 +441,7 @@ final class AddonStore {
       final fd = posix.openAt(
         -100,
         path,
-        0x1 | 0x40 | 0x80 | Posix.noFollow,
+        Posix.wronly | Posix.creat | Posix.excl | Posix.noFollow,
         0x1a4,
       );
       try {
@@ -569,7 +569,7 @@ final class AddonStore {
     final fd = posix.openAt(
       -100,
       p.join(root, '.catalog-install.lock'),
-      0x2 | 0x40 | Posix.noFollow | Posix.cloexec,
+      Posix.rdwr | Posix.creat | Posix.noFollow | Posix.cloexec,
       0x180,
     );
     try {

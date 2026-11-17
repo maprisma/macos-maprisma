@@ -311,6 +311,29 @@ Map<String, String> desktopFonts(
   return {'ui': ?clean(ui), 'mono': ?clean(mono)};
 }
 
+/// macOS appearance palette from `AppleInterfaceStyle` (`dark` vs `light`).
+Map<String, String> macosPalette(String interfaceStyle) =>
+    interfaceStyle == 'dark'
+    ? const {
+        'background': '#1e1e1e',
+        'foreground': '#ebebf0',
+        'accent': '#0a84ff',
+      }
+    : const {
+        'background': '#f5f5f7',
+        'foreground': '#1d1d1f',
+        'accent': '#007aff',
+      };
+
+/// macOS UI and monospace font families (`.AppleSystemUIFont` + `SF Mono` or `Menlo`).
+Map<String, String> macosFonts({bool? hasSfMono}) {
+  final sf =
+      hasSfMono ??
+      (File('/System/Library/Fonts/SFNSMono.ttf').existsSync() ||
+          File('/Library/Fonts/SF-Mono-Regular.otf').existsSync());
+  return {'ui': '.AppleSystemUIFont', 'mono': sf ? 'SF Mono' : 'Menlo'};
+}
+
 /// A Pango font ("Noto Sans  10", "Hack, 10") without its size.
 String pangoFamily(String font) =>
     font.trim().replaceFirst(RegExp(r',?\s+\d+(\.\d+)?$'), '').trim();

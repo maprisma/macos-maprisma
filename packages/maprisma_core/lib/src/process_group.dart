@@ -14,14 +14,59 @@ import 'pty_sessions.dart' show groupMembers, processIdentity;
 /// session and start time — was checked, before the first signal. A member
 /// found later is only taken when its start time is not older than the
 /// leader's, so a process that reused a number is never signalled.
+/// Starts [argv] in a session of its own (`setsid -- ...` on Linux; `setsid()`
+/// + `execvp` without a shell on macOS) so `ProcessGroup(process.pid)` can
+/// track and terminate the leader and every descendant in its process group.
+Future<Process> startInNewSession(
+  List<String> argv, {
+  String? workingDirectory,
+  Map<String, String>? environment,
+  bool includeParentEnvironment = true,
+}) {
+  if (Platform.isMacOS && File('/usr/bin/perl').existsSync()) {
+    return Process.start(
+      '/usr/bin/perl',
+      [
+        '-MPOSIX=setsid',
+        '-e',
+        r'setsid(); exec {$ARGV[0]} @ARGV; exit 127',
+        '--',
+        ...argv,
+      ],
+      workingDirectory: workingDirectory,
+      environment: environment,
+      includeParentEnvironment: includeParentEnvironment,
+    );
+  }
+  if (Platform.isMacOS) {
+    return Process.start(
+      argv.first,
+      argv.skip(1).toList(),
+      workingDirectory: workingDirectory,
+      environment: environment,
+      includeParentEnvironment: includeParentEnvironment,
+    );
+  }
+  return Process.start(
+    'setsid',
+    ['--', ...argv],
+    workingDirectory: workingDirectory,
+    environment: environment,
+    includeParentEnvironment: includeParentEnvironment,
+  );
+}
+
 final class ProcessGroup {
   ProcessGroup(this.leader, [Posix? posix]) : posix = posix ?? Posix() {
     // Right after Process.start the child may not have run setsid() yet: a
-    // moment (≤ 50 ms) for it to lead its group, so its start time is known.
+    // moment for it to lead its group, so its start time is known.
+    final pause = Platform.isMacOS
+        ? const Duration(milliseconds: 8)
+        : const Duration(milliseconds: 2);
     for (var i = 0; i < 25; i++) {
       final own = processIdentity(leader);
       if (own == null || (own.$1 == leader && own.$2 == leader)) break;
-      sleep(const Duration(milliseconds: 2));
+      sleep(pause);
     }
     _take();
   }

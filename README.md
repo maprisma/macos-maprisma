@@ -112,6 +112,67 @@ installed, not started); `tools/build-release.py` the release archive (needs the
 
 Settings live in `~/.config/maprisma/`. Light or dark and the accent colour follow your system.
 
+## macOS (Apple Silicon M4)
+
+Maprisma runs natively on Apple Silicon Macs (macOS 13.0 Ventura or newer, tested for M-series / M4 MacBook Pro) as a pure-Dart + Flutter `Maprisma.app` bundle (`com.maprisma.app`) without the Mac App Store sandbox so it can spawn coding agent CLIs, inspect your own processes and loopback ports, and edit agent configurations.
+
+### Prerequisites on Uwe's M4 MacBook Pro
+
+1. **Xcode** (with macOS SDK & Command Line Tools) and **CocoaPods**:
+   ```sh
+   xcode-select --install
+   sudo xcodebuild -license accept
+   brew install cocoapods
+   ```
+2. **Flutter SDK** (`stable` channel, Dart 3.11+):
+   ```sh
+   brew install --cask flutter
+   flutter config --enable-macos-desktop
+   flutter doctor -v
+   ```
+
+### Build & Install `Maprisma.app`
+
+From the repository root on your MacBook Pro:
+
+```sh
+# 1. Build Release dist/Maprisma.app (includes compiled maprisma-core worker + ad-hoc codesign)
+./build-mac.sh
+
+# 2. Build and install into /Applications (if writable, or with --system) or ~/Applications (--user)
+./install-mac.sh          # auto-selects /Applications or ~/Applications
+./install-mac.sh --user   # installs to ~/Applications/Maprisma.app
+./install-mac.sh --system # installs to /Applications/Maprisma.app
+
+# Launch the installed app:
+open ~/Applications/Maprisma.app   # or: open /Applications/Maprisma.app
+```
+
+> **Gatekeeper note for local / CI ad-hoc builds:** If macOS quarantines a downloaded CI artifact (`Maprisma-macos-arm64.zip`), clear the quarantine attribute before first launch:
+> ```sh
+> xattr -cr /Applications/Maprisma.app
+> ```
+
+### Running Analyzers & Tests on macOS
+
+```sh
+# Pure-Dart service & macOS platform unit tests
+(cd packages/maprisma_core && dart pub get && dart analyze && dart test)
+
+# Flutter desktop UI analyzer & widget tests
+(cd flutter_app && flutter pub get && flutter analyze && flutter test)
+
+# Live development run
+(cd flutter_app && flutter run -d macos)
+```
+
+### macOS Platform Notes
+
+- **`.app` `PATH` resolution:** When launched from Finder, Spotlight, or Dock, `Maprisma.app` automatically augments `PATH` with `/opt/homebrew/bin`, `/opt/homebrew/sbin`, `/usr/local/bin`, `~/.local/bin`, `~/.cargo/bin`, `~/.local/share/mise/shims`, `~/.bun/bin`, and `~/.npm-global/bin` so CLIs (`claude`, `codex`, `gemini`, `ollama`, `llama-server`, `brew`, `npx`, `uv`, `node`) are discovered reliably.
+- **Metal & Unified Memory:** Detects Apple Silicon (`sysctl` + `IOAccelerator`) and Unified Memory capacity for local model sizing and `llama.cpp` Metal builds.
+- **Services & Installers:** Manages background local LLM servers via `launchctl` and `~/Library/LaunchAgents/com.maprisma.*.plist`, and uses Homebrew (`brew install llama.cpp`, `brew install --cask ollama`, `brew install --cask lm-studio`, `brew install node`, `brew install uv`) for package installs.
+- **Terminals & Config Paths:** Supports Ghostty, iTerm2, Kitty, WezTerm, Alacritty, and built-in `Terminal.app` (`osascript`), plus macOS `~/Library/Application Support/Claude/claude_desktop_config.json` and `~/Library/Application Support/Jan`.
+
 ## Privacy
 
 Maprisma never asks for root. It reads your agents' settings (never their credential files) and

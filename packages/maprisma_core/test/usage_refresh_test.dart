@@ -222,7 +222,9 @@ sleep 60
       expect(DateTime.now().difference(started).inSeconds, lessThan(15));
       final pid = File('${root.path}/app-server.pid').readAsStringSync().trim();
       expect(
-        Directory('/proc/$pid').existsSync(),
+        Platform.isMacOS
+            ? Process.runSync('/bin/kill', ['-0', pid]).exitCode == 0
+            : Directory('/proc/$pid').existsSync(),
         isFalse,
       ); // killed afterwards
       expect(
@@ -290,7 +292,12 @@ sleep 60
     );
     expect(DateTime.now().difference(started).inSeconds, lessThan(6));
     final pid = File('${root.path}/slow.pid').readAsStringSync().trim();
-    expect(Directory('/proc/$pid').existsSync(), isFalse);
+    expect(
+      Platform.isMacOS
+          ? Process.runSync('/bin/kill', ['-0', pid]).exitCode == 0
+          : Directory('/proc/$pid').existsSync(),
+      isFalse,
+    );
     expect(await refreshUsage('codex', generic), isFalse); // no rpc: not asked
     expect(
       await askPlanLimits(

@@ -15,6 +15,7 @@ import 'scan_files.dart';
 import 'service_i18n.dart';
 import 'settings.dart';
 import 'adapter_assets.g.dart';
+import 'macos_platform.dart' show macosLocalMounts;
 import 'core_tasks.dart' show taskFocus;
 import 'system_reads.dart';
 import 'provider_facts.dart';
@@ -135,14 +136,16 @@ final class ReadService {
       );
     }
     if (method == 'existing.mounts' || method == 'system.mount_signature') {
-      final text =
-          files.text(
-            '/proc/self/mountinfo',
-            limit: 4 << 20,
-            allowRootOwned: true,
-          ) ??
-          '';
-      final mounts = localMounts(text);
+      final mounts = Platform.isMacOS
+          ? macosLocalMounts()
+          : localMounts(
+              files.text(
+                    '/proc/self/mountinfo',
+                    limit: 4 << 20,
+                    allowRootOwned: true,
+                  ) ??
+                  '',
+            );
       return method == 'existing.mounts'
           ? {'mounts': mounts}
           : {'signature': mountSignature(mounts)};

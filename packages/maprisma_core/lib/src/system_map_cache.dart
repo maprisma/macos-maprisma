@@ -173,7 +173,7 @@ Map<String, dynamic> transactMapCache(
   final fd = posix.openAt(
     -100,
     lockPath,
-    1 | 0x40 | Posix.noFollow | Posix.cloexec,
+    Posix.wronly | Posix.creat | Posix.noFollow | Posix.cloexec,
     0x180,
   );
   try {

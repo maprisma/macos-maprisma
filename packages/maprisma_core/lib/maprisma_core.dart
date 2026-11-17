@@ -1,6 +1,7 @@
 export 'src/core.dart';
 export 'src/desktop.dart';
 export 'src/identity.dart';
+export 'src/macos_platform.dart';
 export 'src/posix_ffi.dart';
 export 'src/install_presence.dart';
 export 'src/protocol.dart';

@@ -4,7 +4,7 @@ import 'dart:io';
 import 'line_diff.dart' show pySplitlines;
 import 'mcp_plans.dart' show checkEntry, libraryKeyPattern;
 import 'model_hub.dart' show boundedOutput;
-import 'process_group.dart' show ProcessGroup, endGroup;
+import 'process_group.dart' show ProcessGroup, endGroup, startInNewSession;
 import 'py_values.dart';
 
 /// mcp_tools: ask an MCP server which tools (and prompts) it offers, the way
@@ -129,13 +129,8 @@ final class _Stdio implements _Link {
       ...environment,
       for (final e in (entry['env'] as Map).entries) '${e.key}': '${e.value}',
     };
-    final process = await Process.start(
-      'setsid',
-      [
-        '--',
-        entry['command'] as String,
-        ...(entry['args'] as List).cast<String>(),
-      ],
+    final process = await startInNewSession(
+      [entry['command'] as String, ...(entry['args'] as List).cast<String>()],
       environment: env,
       includeParentEnvironment: false,
       workingDirectory: home,

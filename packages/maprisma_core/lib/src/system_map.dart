@@ -9,6 +9,7 @@ import 'agent_catalog.dart';
 import 'desktop.dart' show whichIn;
 import 'existing_ai.dart' as existing_ai;
 import 'first_agent.dart' show loadRoutes;
+import 'macos_platform.dart' show macosHardwareInfo;
 import 'posix_ffi.dart';
 import 'provider_facts.dart';
 import 'provider_scans.dart';
@@ -64,6 +65,17 @@ bool _within(String path, String root) =>
 
 /// system_tools.hardware.
 Map<String, dynamic> hardware() {
+  if (Platform.isMacOS) {
+    final hw = macosHardwareInfo();
+    return {
+      'cpus': Platform.numberOfProcessors,
+      'ram': hw.ram,
+      'gpus': [
+        if (hw.vendor != 'cpu')
+          {'name': hw.name, 'vendor': hw.vendor, 'vram': hw.vram},
+      ],
+    };
+  }
   final ram = RegExp(
     r'^MemTotal:\s*(\d+)',
     multiLine: true,
@@ -186,6 +198,7 @@ List<Map<String, dynamic>> detectTools(
 /// system_tools.fstab_hint: an fstab line to review, for a whole-filesystem
 /// UUID mount only.
 String fstabHint(String path, [String? text]) {
+  if (Platform.isMacOS && text == null) return '';
   text ??= small('/proc/self/mountinfo', 128 * 1024);
   String decode(String v) => v.replaceAllMapped(
     RegExp(r'\\([0-7]{3})'),
@@ -306,6 +319,54 @@ Map<String, dynamic> gpuStack(
   Map<String, String> env,
   String home,
 ) {
+  if (Platform.isMacOS) {
+    final places = <String>[];
+    for (final pattern in [
+      '/opt/homebrew/lib/python3*/site-packages/torch',
+      '$home/.local/lib/python3*/site-packages/torch',
+      '$home/.local/share/mise/installs/python/*/lib/python3*/site-packages/torch',
+      '$home/.local/share/*/venv/lib/python3*/site-packages/torch',
+      '$home/.local/share/*/.venv/lib/python3*/site-packages/torch',
+    ]) {
+      places.addAll((_glob(pattern)..sort()).take(20));
+    }
+    final torches = <Map<String, String>>[];
+    for (final folder in places.take(40)) {
+      final text = _gpuSmall('$folder/version.py');
+      final version = RegExp(
+        r'''^__version__\s*=\s*['"]([^'"]{1,40})['"]''',
+        multiLine: true,
+      ).firstMatch(text);
+      if (version == null) continue;
+      final where = folder.contains('site-packages')
+          ? p.dirname(p.dirname(p.dirname(p.dirname(folder))))
+          : folder;
+      final found = {
+        'where': _tilde(where, home),
+        'version': version.group(1)!.split('+').first,
+        'backend': 'MPS (Metal)',
+      };
+      if (!torches.any(
+        (t) =>
+            t['where'] == found['where'] &&
+            t['version'] == found['version'] &&
+            t['backend'] == found['backend'],
+      )) {
+        torches.add(found);
+      }
+    }
+    return {
+      'summary': const ['Metal'],
+      'stack': {
+        'metal': 'yes',
+        'rocm': '',
+        'cuda': '',
+        'vulkan': false,
+        'torch': torches,
+        'missing': const <String>[],
+      },
+    };
+  }
   var rocm = '';
   final roots = [
     env['ROCM_PATH'] ?? '',
@@ -731,16 +792,18 @@ final class SystemMapReader {
       'cpus': cpus,
     };
     final machine = switch (Abi.current()) {
-      Abi.linuxX64 => 'x86_64',
+      Abi.linuxX64 || Abi.macosX64 => 'x86_64',
       Abi.linuxArm64 => 'aarch64',
+      Abi.macosArm64 => 'arm64',
       _ => '',
     };
+    final osLabel = Platform.isMacOS ? 'macOS' : 'Linux';
     final pcInfo = '${pc['gpu']}'.isNotEmpty ? pc['gpu'] : pc['vendor'];
     final nodes = <Map<String, dynamic>>[
       {
         'id': 'pc',
         'label': 'This PC',
-        'detail': 'Linux $machine · $cpus CPU · ${ram ~/ _gib} GiB RAM',
+        'detail': '$osLabel $machine · $cpus CPU · ${ram ~/ _gib} GiB RAM',
         'column': 0,
         'kind': 'hardware',
         'status': '',
@@ -882,17 +945,23 @@ final class SystemMapReader {
       edge('pc', ident);
       if (rt.modelsDir.isNotEmpty) folder(rt.modelsDir, 'Models folder', ident);
       if (rt.service.isNotEmpty) {
+        final serviceFile = Platform.isMacOS
+            ? '$home/Library/LaunchAgents/${rt.service}.plist'
+            : '$home/.config/systemd/user/${rt.service}.service';
+        final serviceFolder = Platform.isMacOS
+            ? '$home/Library/LaunchAgents'
+            : '$home/.config/systemd/user';
         node(
           'service:${rt.service}',
-          '${rt.service}.service',
+          Platform.isMacOS ? '${rt.service}.plist' : '${rt.service}.service',
           rt.service,
           4,
           'service',
-          path: '$home/.config/systemd/user/${rt.service}.service',
+          path: serviceFile,
           status: rt.running ? 'running' : 'stopped',
         );
         edge(ident, 'service:${rt.service}');
-        folder('$home/.config/systemd/user', 'Configuration', ident);
+        folder(serviceFolder, 'Configuration', ident);
       }
     }
     final known = <String, Adapter>{
