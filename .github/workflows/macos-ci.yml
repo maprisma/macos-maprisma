@@ -31,6 +31,7 @@ jobs:
         run: |
           dart pub get
           dart analyze
+          dart test test/mcp_tools_test.dart --reporter expanded
           dart test
 
       - name: Analyze & test flutter_app

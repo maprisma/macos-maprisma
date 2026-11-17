@@ -897,14 +897,15 @@ class Posix {
     _fcntlSet(kq, 2, 1);
     final change = calloc<Uint8>(32);
     final event = calloc<Uint8>(32);
-    final zero = calloc<Int64>(2);
     try {
       final cb = ByteData.sublistView(change.asTypedList(32));
       cb.setUint64(0, pid, Endian.host); // ident = pid
       cb.setInt16(8, -5, Endian.host); // filter = EVFILT_PROC (-5)
-      cb.setUint16(10, 0x0001 | 0x0004, Endian.host); // EV_ADD | EV_ENABLE
+      // EV_ADD (0x1) | EV_ENABLE (0x4) | EV_RECEIPT (0x40): returns a receipt
+      // without dequeuing NOTE_EXIT if the process already exited.
+      cb.setUint16(10, 0x0001 | 0x0004 | 0x0040, Endian.host);
       cb.setUint32(12, 0x80000000, Endian.host); // NOTE_EXIT
-      final n = _kevent(kq, change, 1, event, 1, zero);
+      final n = _kevent(kq, change, 1, event, 1, nullptr);
       if (n < 0) {
         _close(kq);
         return -1;
@@ -913,8 +914,7 @@ class Posix {
         final eb = ByteData.sublistView(event.asTypedList(32));
         final flags = eb.getUint16(10, Endian.host);
         final data = eb.getInt64(16, Endian.host);
-        // EV_ERROR = 0x4000, ESRCH = 3: process already gone before attach.
-        if ((flags & 0x4000) != 0 && data == 3) {
+        if ((flags & 0x4000) != 0 && data != 0) {
           _close(kq);
           return -1;
         }
@@ -924,7 +924,6 @@ class Posix {
     } finally {
       calloc.free(change);
       calloc.free(event);
-      calloc.free(zero);
     }
   }
 

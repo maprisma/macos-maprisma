@@ -56,7 +56,7 @@ void main() {
     }
     expect(status['state'], 'done', reason: '$status');
     final result = status['result'] as Map;
-    expect(result['status'], 'ok');
+    expect(result['status'], 'ok', reason: '$result');
     expect(result['server'], 'fixture 1');
     expect((result['tools'] as List).single['name'], 'hello');
   });
