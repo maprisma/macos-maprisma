@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Developer tooling only. Never installs, launches the live GTK app or publishes.
+set -euo pipefail
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+frontend="$root/flutter_app"
+action=${1:-check}
+if [[ $# -gt 1 ]]; then
+    echo 'Usage: tools/flutter-dev prepare|check|build|run' >&2
+    exit 2
+fi
+case "$action" in prepare|check|build|run) ;; *) echo 'Unknown action' >&2; exit 2 ;; esac
+if ! command -v flutter >/dev/null 2>&1; then
+    echo 'Flutter SDK is not on PATH. Install it, then rerun this command.' >&2
+    exit 1
+fi
+dart_binary=$(python3 "$root/tools/dart_sdk.py")
+python3 "$root/tools/flutter-assets.py"
+python3 "$root/tools/core-assets.py"
+if [[ ! -d "$frontend/linux" ]]; then
+    staging=$(mktemp -d)
+    trap 'rm -rf -- "$staging"' EXIT
+    flutter --suppress-analytics --no-version-check create --offline --no-pub --platforms=linux --project-name=maprisma \
+        --org=com.maprisma "$staging/maprisma"
+    # Use the SDK's current Linux runner, retaining the production application id.
+    python3 - "$staging/maprisma/linux/CMakeLists.txt" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+old = 'set(APPLICATION_ID "com.maprisma.maprisma")'
+if old not in text:
+    raise SystemExit('Unexpected Flutter runner template; inspect application id before continuing')
+path.write_text(text.replace(old, 'set(APPLICATION_ID "com.maprisma.Maprisma")')
+                )
+PY
+    cp -R -- "$staging/maprisma/linux" "$frontend/linux"
+    cp -- "$staging/maprisma/.metadata" "$frontend/.metadata"
+fi
+cd -- "$frontend"
+if [[ ${MAPRISMA_PUB_OFFLINE:-0} == 1 ]]; then
+    flutter --suppress-analytics --no-version-check pub get --offline
+else
+    flutter --suppress-analytics --no-version-check pub get
+fi
+case "$action" in
+    prepare) ;;
+    check)
+        (
+            cd "$root/packages/maprisma_core"
+            "$dart_binary" pub get --offline
+            "$dart_binary" format --output=none --set-exit-if-changed lib bin test
+            "$dart_binary" analyze --fatal-infos
+            "$dart_binary" test
+        )
+        python3 "$root/tools/diff-core.py" --dart "$dart_binary"
+        python3 "$root/tools/check-dart-core-release.py" --dart "$dart_binary"
+        "$dart_binary" format --output=none --set-exit-if-changed lib test
+        flutter --suppress-analytics --no-version-check analyze --no-pub
+        flutter --suppress-analytics --no-version-check test --no-pub --timeout 60s
+        ;;
+    build)
+        python3 "$root/tools/build-flutter-preview.py"
+        # Phase 7: nothing of Python in what was built.
+        python3 "$root/tools/check-bundle.py"
+        ;;
+    run)
+        # The isolated builder assigns the Devel identity for every preview.
+        preview_log=$(mktemp)
+        trap 'rm -f -- "$preview_log"' EXIT
+        python3 "$root/tools/build-flutter-preview.py" | tee "$preview_log"
+        preview_binary=$(sed -n 's/^Development preview: //p' "$preview_log" | tail -n 1)
+        test -n "$preview_binary"
+        rm -f -- "$preview_log"
+        exec "$preview_binary"
+        ;;
+esac

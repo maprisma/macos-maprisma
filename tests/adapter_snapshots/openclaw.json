@@ -1,0 +1,164 @@
+{
+ "command": "openclaw",
+ "name": "OpenClaw",
+ "label": "OpenClaw",
+ "full_name": "",
+ "icon": "",
+ "icon_font": "omarchy",
+ "spec": "",
+ "package": "openclaw",
+ "package_only": true,
+ "own_install_counts": true,
+ "install_marks": [
+  "~/.openclaw/",
+  "/node_modules/openclaw/"
+ ],
+ "download": null,
+ "short_version": false,
+ "offered": true,
+ "login_status": null,
+ "fixed_provider": "",
+ "self_served": false,
+ "short_model_flag": false,
+ "self_update": [],
+ "install": [
+  {
+   "kind": "command",
+   "spec": "",
+   "tool": "",
+   "argv": [
+    "omarchy-install-openclaw-cli",
+    "--now"
+   ],
+   "sudo": true,
+   "packages": [],
+   "url": "",
+   "note": "",
+   "update": []
+  },
+  {
+   "kind": "package",
+   "spec": "",
+   "tool": "",
+   "argv": [],
+   "sudo": false,
+   "packages": [
+    [
+     "pacman",
+     "openclaw"
+    ]
+   ],
+   "url": "",
+   "note": "",
+   "update": []
+  }
+ ],
+ "data": [
+  "~/.openclaw"
+ ],
+ "homepage": "https://github.com/openclaw/openclaw",
+ "ask": [],
+ "games": [],
+ "effort": [],
+ "configure": [
+  {
+   "label": "Configure",
+   "argv": [
+    "openclaw",
+    "configure"
+   ],
+   "note": "",
+   "window": false
+  },
+  {
+   "label": "Guided setup",
+   "argv": [
+    "openclaw",
+    "onboard"
+   ],
+   "note": "",
+   "window": false
+  },
+  {
+   "label": "Check its setup",
+   "argv": [
+    "openclaw",
+    "doctor"
+   ],
+   "note": "",
+   "window": false
+  }
+ ],
+ "home": "~/.openclaw",
+ "activity": [],
+ "program_dir": "",
+ "web_search": false,
+ "chat_app": false,
+ "herdr": "",
+ "logout": [],
+ "start": [],
+ "research": [],
+ "research_output": "text",
+ "task": [],
+ "rewrite": [],
+ "advise": [],
+ "closed": [],
+ "tools_setting": [],
+ "sandbox_setting": "",
+ "replies": [],
+ "subagents": [],
+ "session_files": "openclaw-db",
+ "asks_setting": "",
+ "access": null,
+ "security": null,
+ "sessions": {
+  "collect": "agent_sessions.openclaw_db",
+  "note": "Numbers from OpenClaw's session database (no text is read). The API value is what the tokens would cost at API prices, not what a plan costs."
+ },
+ "usage": null,
+ "latest": null,
+ "installer": null,
+ "detect": false,
+ "limits": false,
+ "details": true,
+ "models": null,
+ "local_llm": {
+  "files": [
+   "~/.openclaw/openclaw.json"
+  ],
+  "added": [
+   "{\n  \"models\": {\n    \"providers\": {\n      \"llamacpp\": {\n        \"baseUrl\": \"http://127.0.0.1:8080/v1\",\n        \"apiKey\": \"local\",\n        \"api\": \"openai-completions\",\n        \"models\": [\n          {\n            \"id\": \"m1\",\n            \"name\": \"m1\",\n            \"contextWindow\": 8192\n          },\n          {\n            \"id\": \"m2\",\n            \"name\": \"m2\"\n          }\n        ]\n      }\n    },\n    \"mode\": \"merge\"\n  },\n  \"agents\": {\n    \"defaults\": {\n      \"model\": {\n        \"primary\": \"llamacpp/m1\"\n      }\n    }\n  }\n}\n"
+  ],
+  "connected": true,
+  "active": true,
+  "removed": [
+   "{}\n"
+  ]
+ },
+ "skills": {
+  "dirs": [
+   "~/.openclaw/skills",
+   "~/.agents/skills"
+  ],
+  "own": "~/.openclaw/skills",
+  "settings_list": false,
+  "settings_file": "",
+  "listed": [
+   "~/o/skills"
+  ],
+  "write": null
+ },
+ "mcp": {
+  "path": "~/.openclaw/openclaw.json",
+  "format": "json",
+  "key": "mcp.servers",
+  "shape": "openclaw",
+  "in_app": "",
+  "write": [
+   "{\n  \"mcp_servers\": {\n    \"old\": {\n      \"command\": \"a\"\n    }\n  },\n  \"mcp\": {\n    \"servers\": {\n      \"new\": {\n        \"command\": \"b\"\n      }\n    }\n  }\n}\n",
+   "{\n  \"mcp_servers\": {\n    \"old\": {\n      \"command\": \"a\"\n    }\n  }\n}\n"
+  ],
+  "read": null,
+  "native": null
+ }
+}

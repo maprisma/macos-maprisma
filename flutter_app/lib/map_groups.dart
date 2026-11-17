@@ -1,0 +1,621 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+
+import 'app_look.dart' show StatusColors;
+import 'app_theme.dart' show cornerSizes, corners;
+import 'map_3d.dart';
+
+/// UI-only metadata. Never inserted into the graph or serialized.
+class MapGroup {
+  const MapGroup(
+    this.category,
+    this.label,
+    this.count,
+    this.found, [
+    this.available = 0,
+  ]);
+  final int category;
+  final String label;
+  final int count, found, available;
+  bool get dummy => count == 0;
+  static List<MapGroup> fromGraph(
+    Map<String, dynamic> graph,
+    List<String> columns, {
+    Map<int, int> found = const {},
+    Map<int, int> available = const {},
+  }) => [
+    for (var i = 0; i < columns.length; i++)
+      MapGroup(
+        i,
+        columns[i],
+        (graph['nodes'] as List? ?? [])
+            .where((n) => n['column'] == i && n['dim'] != true)
+            .length,
+        found[i] ?? 0,
+        available[i] ?? found[i] ?? 0,
+      ),
+  ];
+}
+
+class MapGroupCard extends StatelessWidget {
+  const MapGroupCard({
+    super.key,
+    required this.group,
+    required this.tr,
+    required this.onExpand,
+    this.threeD = false,
+  });
+  final MapGroup group;
+  final String Function(String) tr;
+  final VoidCallback onExpand;
+  final bool threeD;
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final radius = corners(context);
+    final face = group.dummy
+        ? colors.surfaceContainerLowest
+        : colors.surfaceContainerHigh;
+    return Tooltip(
+      message: tr(
+        group.dummy ? 'Nothing set up yet. Expand to add one' : 'Expand',
+      ),
+      child: Map3dBlock(
+        enabled: threeD,
+        radius: radius,
+        faceColor: face,
+        depth: map3dColumnDepth(group.category),
+        dimmed: group.dummy,
+        child: CustomPaint(
+          foregroundPainter: group.dummy
+              ? _DashedBorder(colors.outline, radius)
+              : null,
+          child: Card(
+            margin: EdgeInsets.zero,
+            color: face,
+            elevation: threeD ? 0 : null,
+            // The empty card has only its dashed border.
+            shape: group.dummy
+                ? RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(radius),
+                  )
+                : null,
+            child: InkWell(
+              onTap: onExpand,
+              borderRadius: BorderRadius.circular(radius),
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Row(
+                  children: [
+                    if (group.dummy) const Icon(Icons.add, size: 18),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Text(
+                            tr(group.label),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          Text(
+                            group.dummy
+                                ? group.found > 0
+                                      ? tr(
+                                          '{0} found on this PC · Expand',
+                                        ).replaceAll('{0}', '${group.found}')
+                                      : tr('None yet · Expand to add one')
+                                : tr('{0} on · {1} more available')
+                                      .replaceAll('{0}', '${group.count}')
+                                      .replaceAll('{1}', '${group.available}'),
+                            maxLines: 2,
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: tr('Expand'),
+                      onPressed: onExpand,
+                      icon: const Icon(Icons.open_in_full, size: 18),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A dashed "+" card: the last entry of an MCP, skills or model folder card on
+/// the map, and an action on a column's own page (Add MCP server, Add model).
+class MapAddCard extends StatelessWidget {
+  const MapAddCard({
+    super.key,
+    required this.label,
+    required this.hint,
+    required this.onTap,
+    this.icon = Icons.add,
+  });
+  final String label, hint;
+  final IconData icon;
+  final VoidCallback? onTap;
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final radius = corners(context);
+    return Semantics(
+      button: true,
+      label: '$label. $hint',
+      excludeSemantics: true,
+      onTap: onTap,
+      child: Tooltip(
+        message: hint,
+        child: CustomPaint(
+          foregroundPainter: _DashedBorder(colors.outline, radius),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: onTap,
+              borderRadius: BorderRadius.circular(radius),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                child: Row(
+                  children: [
+                    Icon(icon, size: 18, color: colors.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: colors.primary),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A dashed card at the end of the Agents card: an agent whose add-on is on
+/// but whose program is not on this PC. A click installs it; its menu also
+/// opens the add-on or switches it off.
+class MapMissingCard extends StatelessWidget {
+  const MapMissingCard({
+    super.key,
+    required this.name,
+    required this.tr,
+    required this.onAction,
+  });
+  final String name;
+  final String Function(String) tr;
+  final void Function(BuildContext, String action) onAction;
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final radius = corners(context);
+    final hint = tr('Not installed');
+    final install = tr('Install {0}…').replaceAll('{0}', name);
+    return Semantics(
+      button: true,
+      label: '$name. $hint. $install',
+      onTap: () => onAction(context, 'install'),
+      child: Tooltip(
+        message: install,
+        child: CustomPaint(
+          foregroundPainter: _DashedBorder(colors.outline, radius),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () => onAction(context, 'install'),
+              borderRadius: BorderRadius.circular(radius),
+              child: Padding(
+                padding: const EdgeInsets.only(left: 10),
+                child: Row(
+                  children: [
+                    Icon(Icons.download, size: 18, color: colors.primary),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '$name · $hint',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: colors.primary),
+                      ),
+                    ),
+                    PopupMenuButton<String>(
+                      tooltip: tr('Actions'),
+                      iconSize: 18,
+                      icon: const Icon(Icons.more_vert),
+                      onSelected: (action) => onAction(context, action),
+                      itemBuilder: (_) => [
+                        PopupMenuItem(value: 'install', child: Text(install)),
+                        PopupMenuItem(
+                          value: 'details',
+                          child: Text(tr('Add-on…')),
+                        ),
+                        PopupMenuItem(
+                          value: 'off',
+                          child: Text(tr('Switch off')),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DashedBorder extends CustomPainter {
+  _DashedBorder(this.color, this.radius);
+  final Color color;
+  final double radius;
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path()
+      ..addRRect(
+        RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(radius)),
+      );
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke;
+    for (final metric in path.computeMetrics()) {
+      for (double i = 0; i < metric.length; i += 10) {
+        canvas.drawPath(metric.extractPath(i, i + 5), paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedBorder oldDelegate) =>
+      oldDelegate.color != color || oldDelegate.radius != radius;
+}
+
+/// Finite transition only; the map's controller and selection live outside it.
+class MapFocus extends StatelessWidget {
+  const MapFocus({
+    super.key,
+    required this.title,
+    required this.tr,
+    required this.onBack,
+    required this.child,
+    this.footer,
+    this.hosted = false,
+  });
+  final String title;
+  final String Function(String) tr;
+  final VoidCallback onBack;
+  final Widget child;
+  final Widget? footer;
+  final bool hosted;
+  @override
+  Widget build(BuildContext context) {
+    final content = Column(
+      children: [
+        if (!hosted)
+          ListTile(
+            leading: IconButton(
+              tooltip: tr('Back'),
+              onPressed: onBack,
+              icon: const Icon(Icons.arrow_back),
+            ),
+            title: Text(
+              tr(title),
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+          ),
+        Expanded(child: child),
+        if (footer != null) ...[const Divider(height: 1), footer!],
+      ],
+    );
+    return Focus(
+      autofocus: true,
+      onKeyEvent: (_, event) {
+        if (event is KeyDownEvent &&
+            [
+              LogicalKeyboardKey.escape,
+              LogicalKeyboardKey.backspace,
+            ].contains(event.logicalKey)) {
+          if (event.logicalKey == LogicalKeyboardKey.backspace &&
+              FocusManager.instance.primaryFocus?.context
+                      ?.findAncestorWidgetOfExactType<EditableText>() !=
+                  null) {
+            return KeyEventResult.ignored;
+          }
+          onBack();
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      },
+      child: hosted
+          ? content
+          : GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onBack,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 900),
+                  child: GestureDetector(
+                    onTap: () {},
+                    child: Card(
+                      margin: const EdgeInsets.all(16),
+                      child: content,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+    );
+  }
+}
+
+/// The badge in an agent's box (map.badges): what is left of its plan
+/// limits as a small battery, or today's cost for one paid per token; green,
+/// yellow or red at Settings › Costs' levels, the details in the tooltip.
+class AgentBadge extends StatelessWidget {
+  const AgentBadge({super.key, required this.badge});
+  final Map badge;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final colour = switch ('${badge['colour']}') {
+      'red' => scheme.error,
+      'yellow' => StatusColors.warn,
+      _ => StatusColors.ok,
+    };
+    Widget battery(num value) {
+      final left = value.toDouble().clamp(0.0, 1.0);
+      final cell = Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            key: const ValueKey('agent-battery'),
+            width: 22,
+            height: 10,
+            padding: const EdgeInsets.all(1),
+            decoration: BoxDecoration(
+              border: Border.all(color: colour, width: 1),
+              borderRadius: BorderRadius.circular(
+                cornerSizes(context).small.clamp(0, 2),
+              ),
+            ),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: FractionallySizedBox(
+                widthFactor: left,
+                heightFactor: 1,
+                child: ColoredBox(color: colour),
+              ),
+            ),
+          ),
+          Container(width: 2, height: 4, color: colour),
+        ],
+      );
+      // Numbers that may be out of date (map.badges' stale): faded.
+      return badge['stale'] == true
+          ? Opacity(
+              key: const ValueKey('agent-battery-stale'),
+              opacity: .4,
+              child: cell,
+            )
+          : cell;
+    }
+
+    final Widget child;
+    if (badge['kind'] == 'gpu') {
+      // A local LLM's free GPU memory: a memory chip in the battery's colours.
+      final chip = Icon(
+        Icons.memory,
+        key: const ValueKey('gpu-memory'),
+        size: 18,
+        color: colour,
+      );
+      child = badge['stale'] == true ? Opacity(opacity: .4, child: chip) : chip;
+    } else if (badge['kind'] == 'battery') {
+      child = battery(badge['left'] as num? ?? 0);
+    } else {
+      final cost = Text(
+        '${badge['label']}',
+        key: const ValueKey('agent-cost'),
+        style: TextStyle(
+          fontSize: 11,
+          color: colour,
+          fontWeight: FontWeight.w600,
+        ),
+      );
+      // Paid per token: what is left of the day's limit beside the money.
+      child = badge['left'] is num
+          ? Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                battery(badge['left'] as num),
+                const SizedBox(width: 4),
+                cost,
+              ],
+            )
+          : cost;
+    }
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Tooltip(message: '${badge['tip']}', child: child),
+    );
+  }
+}
+
+/// In the battery's place on an online agent's card that has none (no plan
+/// limits Maprisma can read, e.g. Antigravity CLI): an "i" saying so.
+class NoBatteryHint extends StatelessWidget {
+  const NoBatteryHint({super.key, required this.message});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.symmetric(horizontal: 4),
+    child: Tooltip(
+      message: message,
+      child: SizedBox(
+        key: const ValueKey('agent-no-battery'),
+        width: 24,
+        child: Icon(
+          Icons.info_outline,
+          size: 16,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    ),
+  );
+}
+
+/// Whether [node] is an online agent's box (no battery gets NoBatteryHint).
+bool onlineAgent(Map node) =>
+    node['kind'] == 'agent' && node['group'] != 'local';
+
+/// A card's title row left of its battery and menu: the [name], and the
+/// [usage] text (UsageBoxLabel) centred in the room between the name and the
+/// battery. The name takes at most 60 % while usage text is shown.
+class CardTitle extends StatelessWidget {
+  const CardTitle({super.key, required this.name, this.usage});
+  final Widget name;
+  final Widget? usage;
+
+  @override
+  Widget build(BuildContext context) {
+    final usage = this.usage;
+    if (usage == null) return name;
+    return LayoutBuilder(
+      builder: (context, size) => Row(
+        children: [
+          ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: size.maxWidth * .6),
+            child: name,
+          ),
+          Expanded(child: Center(child: usage)),
+        ],
+      ),
+    );
+  }
+}
+
+/// The ↑ version in a box whose program, MCP server or add-on has a newer
+/// version (task 068, the graph's update_badges); its menu has the update.
+class UpdateBadge extends StatelessWidget {
+  const UpdateBadge({super.key, required this.updates, required this.tr});
+  final List updates;
+  final String Function(String) tr;
+
+  @override
+  Widget build(BuildContext context) {
+    final version = '${(updates.first as Map)['version']}';
+    return Padding(
+      key: const ValueKey('update-badge'),
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Tooltip(
+        message: tr('Update available: {0}').replaceAll('{0}', version),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.upgrade, size: 14, color: StatusColors.warn),
+            Flexible(
+              child: Text(
+                version,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                // The yellow arrow marks it; the text keeps its contrast.
+                style: TextStyle(
+                  fontSize: 11,
+                  color: Theme.of(context).colorScheme.onSurface,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The menu items of a box's update badge: (action, label) for
+/// MapEditor.onUpdate.
+List<(String, String)> updateMenuItems(
+  List updates,
+  String Function(String) tr,
+) => [
+  for (final u in updates.cast<Map>())
+    ...switch (u['kind']) {
+      'program' => [
+        if (u['ai'] == true) ('update_ai', tr('Update with AI…')),
+        ('update_now', tr('Update now')),
+      ],
+      'mcp' => [
+        if (u['ai'] == true) ('update_ai', tr('Update with AI…')),
+        if (u['on_pc'] == true) ('update_use', tr('Use the new version…')),
+      ],
+      'addon' => [
+        (
+          'update_addon',
+          tr('Update add-on to {0}').replaceAll('{0}', '${u['version']}'),
+        ),
+      ],
+      _ => const <(String, String)>[],
+    },
+];
+
+/// The usage statistics box of a working agent (map.usage): tokens per
+/// second of its latest reply, its context size and the share in use
+/// (yellow from 75 %, red over 90 %), in the chosen text size.
+class UsageBoxLabel extends StatelessWidget {
+  const UsageBoxLabel({super.key, required this.box, required this.size});
+  final Map box;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final parts = (box['parts'] as List? ?? const []).cast<List>();
+    return Padding(
+      key: const ValueKey('usage-box'),
+      padding: const EdgeInsets.symmetric(horizontal: 4),
+      child: Tooltip(
+        message: '${box['model'] ?? ''}',
+        child: Text.rich(
+          TextSpan(
+            children: [
+              for (var i = 0; i < parts.length; i++)
+                TextSpan(
+                  text: '${i > 0 ? ' · ' : ''}${parts[i][0]}',
+                  style: TextStyle(
+                    color: switch ('${parts[i][1]}') {
+                      'red' => scheme.error,
+                      'yellow' => StatusColors.warn,
+                      _ => scheme.onSurfaceVariant,
+                    },
+                  ),
+                ),
+            ],
+          ),
+          style: TextStyle(fontSize: size * 1.33),
+          maxLines: 1,
+          overflow: TextOverflow.fade,
+          softWrap: false,
+        ),
+      ),
+    );
+  }
+}

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Maprisma
+GenericName=AI setup
+Comment=Your AI agents, models and tools on one map
+Exec=maprisma
+Icon=com.maprisma.Maprisma
+Terminal=false
+Categories=Development;GTK;
+Keywords=AI;agents;LLM;MCP;models;skills;Claude;Codex;Ollama;
+StartupNotify=true
+StartupWMClass=com.maprisma.Maprisma

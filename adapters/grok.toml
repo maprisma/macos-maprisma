@@ -1,0 +1,46 @@
+# xAI's Grok CLI (docs/adapter-format.md): facts only, nothing in this file runs.
+command = "grok"
+name = "Grok"
+label = "Grok"
+icon = "U+E904"
+icon_font = "omarchy"
+spec = "npm:@xai-official/grok"
+homepage = "https://www.npmjs.com/package/@xai-official/grok"
+data = ["~/.grok"]
+home = "~/.grok"
+web_search = true                      # searches the web itself (no MCP server needed)
+
+[details]                              # its model: the one its newest session ran
+reader = "grok"
+
+[[install]]
+kind = "mise"
+spec = "npm:@xai-official/grok"
+
+[skills]
+dirs = ["~/.grok/skills"]
+own = "~/.grok/skills"
+listed = { file = "~/.grok/config.toml", format = "toml", key = "skills.paths" }
+
+[mcp]
+path = "~/.grok/config.toml"
+format = "toml"
+key = "mcp_servers"
+
+[access]
+how = "An API key from console.x.ai"
+login = "grok"
+env = ["XAI_API_KEY"]
+
+# The AI helper of the other Maprisma apps (tools/export-helpers.py -> data/helpers.json, docs/adapter-format.md).
+
+# No [task]: grok starts its interactive TUI only without arguments; no first prompt is documented.
+# Source: https://docs.x.ai/build/cli/reference
+
+[ask]                                  # one prompt (-p), plain text; dontAsk denies every tool without an allow
+                                       # rule, the read-only sandbox blocks writes and network
+# Source: https://docs.x.ai/build/cli/reference, https://docs.x.ai/build/cli/headless-scripting,
+# https://docs.x.ai/build/enterprise (Permissions: dontAsk), https://docs.x.ai/build/features/sandbox
+argv = ["grok", "--no-auto-update", "-p", "{prompt}", "--output-format", "plain", "--permission-mode", "dontAsk",
+        "--sandbox", "read-only"]
+verified = false                       # documentation only, not yet tried with it

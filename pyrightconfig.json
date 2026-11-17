@@ -1,0 +1,22 @@
+{
+  "pythonVersion": "3.14",
+  "typeCheckingMode": "basic",
+  "exclude": [
+    "tests",
+    "docs",
+    "tools",
+    "addons",
+    "adapters",
+    "**/__pycache__",
+    "addon_api.py",
+    "addon_store.py",
+    "desktop_generic.py",
+    "icons.py",
+    "models_ctl.py"
+  ],
+  "reportOptionalMemberAccess": "none",
+  "reportOptionalSubscript": "none",
+  "reportOptionalCall": "none",
+  "reportOptionalIterable": "none",
+  "reportOptionalOperand": "none"
+}

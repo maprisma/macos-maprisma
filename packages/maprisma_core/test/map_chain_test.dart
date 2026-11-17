@@ -1,0 +1,614 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:maprisma_core/maprisma_core.dart';
+import 'package:maprisma_core/src/agent_catalog.dart';
+import 'package:maprisma_core/src/agent_details.dart';
+import 'package:maprisma_core/src/inventory.dart';
+import 'package:maprisma_core/src/provider_scans.dart';
+import 'package:test/test.dart';
+
+/// Review 063 (Codex): the map's agent → provider → model chain.
+void main() {
+  late Directory home;
+  late CoreService core;
+  setUp(() {
+    home = Directory.systemTemp.createTempSync('chain');
+    Directory('${home.path}/proc').createSync();
+    core = CoreService(
+      environment: {
+        'HOME': home.path,
+        'PATH': '${home.path}/bin',
+        'MAPRISMA_DESKTOP': 'generic',
+        'MAPRISMA_SCAN_PROC': '${home.path}/proc',
+      },
+    );
+  });
+  tearDown(() => home.deleteSync(recursive: true));
+
+  void write(String path, String text) => File('${home.path}/$path')
+    ..createSync(recursive: true)
+    ..writeAsStringSync(text);
+  AgentRecord agent(String command) => AgentRecord(
+    core.reads.catalog.adapter(command)!,
+    name: command,
+    icon: '',
+    installed: true,
+  );
+  RuntimeRecord llama(String address, List<String> models) =>
+      RuntimeRecord('llamacpp', 'llama.cpp')
+        ..installed = true
+        ..running = true
+        ..address = address
+        ..models = models;
+  Set<(String, String, String)> edges(Map graph) => {
+    for (final e in (graph['edges'] as List).cast<Map>())
+      ('${e['source']}', '${e['target']}', '${e['kind']}'),
+  };
+  Map<String, Map> nodes(Map graph) => {
+    for (final n in (graph['nodes'] as List).cast<Map>()) '${n['id']}': n,
+  };
+
+  test('F4: a configured port finds the runtime detected there', () {
+    final provider = core.reads.details.provider(
+      'llama',
+      'http://127.0.0.1:9090/v1',
+    );
+    expect(provider['runtime'], '');
+    final info = AgentInfo()
+      ..model = 'qwen (llama)'
+      ..providers.add(provider);
+    final inv = InventorySnapshot()
+      ..runtimes.add(llama('127.0.0.1:9090', ['qwen']));
+    final graph = core.reads.graph.build([agent('pi')], {'pi': info}, inv);
+    expect(edges(graph), contains(('agent:pi', 'runtime:llamacpp', 'uses')));
+    expect(
+      edges(graph),
+      contains(('agent:pi', 'model:runtime:llamacpp:qwen', 'default')),
+    );
+    // Its usual port still finds it when nothing is detected on another.
+    inv.runtimes.single.address = '';
+    expect(
+      localRuntime(
+        core.reads.details.provider('llama', 'http://127.0.0.1:8080/v1'),
+        inv.runtimes,
+      ),
+      same(inv.runtimes.single),
+    );
+  });
+
+  test('F5, F7: an unqualified model on a local endpoint is that LLM\'s', () {
+    final info = AgentInfo()
+      ..model = 'qwen'
+      ..providers.add(
+        core.reads.details.provider('Anthropic API', 'http://localhost:8080'),
+      );
+    final inv = InventorySnapshot()
+      ..runtimes.add(llama('127.0.0.1:8080', ['qwen', 'gemma']));
+    final graph = core.reads.graph.build(
+      [agent('claude')],
+      {'claude': info},
+      inv,
+      running: {
+        'claude': ['gemma'],
+      },
+    );
+    expect(
+      edges(graph),
+      contains(('agent:claude', 'model:runtime:llamacpp:qwen', 'default')),
+    );
+    expect(nodes(graph).values.where((n) => n['kind'] == 'cloud'), isEmpty);
+    expect(nodes(graph)['model:runtime:llamacpp:gemma']!['status'], 'running');
+  });
+
+  test('F6: the models in use are drawn past the first ten; a gone one '
+      'stays, missing', () {
+    final provider = core.reads.details.provider(
+      'llama',
+      'http://127.0.0.1:8080/v1',
+    );
+    final inv = InventorySnapshot()
+      ..runtimes.add(
+        llama('127.0.0.1:8080', [
+          for (var i = 0; i < 12; i++) 'm${'$i'.padLeft(2, '0')}',
+        ]),
+      );
+    AgentInfo set(String model) => AgentInfo()
+      ..model = '$model (llama)'
+      ..providers.add(provider);
+    var graph = core.reads.graph.build(
+      [agent('pi')],
+      {'pi': set('m10')},
+      inv,
+      providerModels: {'runtime:llamacpp': 'model:runtime:llamacpp:m11'},
+    );
+    expect(
+      edges(graph),
+      contains(('agent:pi', 'model:runtime:llamacpp:m10', 'default')),
+    );
+    expect(nodes(graph), contains('model:runtime:llamacpp:m11'));
+    expect(nodes(graph), isNot(contains('more:runtime:llamacpp')));
+    graph = core.reads.graph.build([agent('pi')], {'pi': set('gone')}, inv);
+    final gone = nodes(graph)['model:runtime:llamacpp:gone']!;
+    expect([gone['status'], gone['label']], ['missing', 'gone']);
+    expect(
+      edges(graph),
+      containsAll([
+        ('agent:pi', 'model:runtime:llamacpp:gone', 'default'),
+        ('runtime:llamacpp', 'model:runtime:llamacpp:gone', 'serves'),
+      ]),
+    );
+    expect(nodes(graph)['more:runtime:llamacpp']!['label'], '+2 more');
+  });
+
+  test('F17: an own provider without its sign-in is one it can use', () {
+    Map build() => core.reads.graph.build(
+      [agent('codex')],
+      {'codex': AgentInfo()..model = 'gpt-6.1-sol'},
+      InventorySnapshot(),
+    );
+    expect(
+      edges(build()),
+      contains(('agent:codex', 'cloud:openai', 'available')),
+    );
+    expect(nodes(build())['agent:codex']!['own_provider'], 'cloud:openai');
+    write('.codex/auth.json', '{}');
+    expect(edges(build()), contains(('agent:codex', 'cloud:openai', 'uses')));
+  });
+
+  test('R3 #11: with CODEX_HOME set, ~/.codex/auth.json is no sign-in', () {
+    final moved = Directory('${home.path}/codex-home')..createSync();
+    final service = CoreService(
+      environment: {
+        'HOME': home.path,
+        'PATH': '${home.path}/bin',
+        'MAPRISMA_DESKTOP': 'generic',
+        'MAPRISMA_SCAN_PROC': '${home.path}/proc',
+        'CODEX_HOME': moved.path,
+      },
+    );
+    final codex = AgentRecord(
+      service.reads.catalog.adapter('codex')!,
+      name: 'codex',
+      icon: '',
+      installed: true,
+    );
+    Set<(String, String, String)> build() => edges(
+      service.reads.graph.build(
+        [codex],
+        {'codex': AgentInfo()..model = 'gpt-6.1-sol'},
+        InventorySnapshot(),
+      ),
+    );
+    write('.codex/auth.json', '{}'); // the default home's: not this one
+    expect(build(), contains(('agent:codex', 'cloud:openai', 'available')));
+    // The line and the battery agree: one rule.
+    expect(service.reads.details.limitsSignedIn(codex.adapter), isFalse);
+    write('codex-home/auth.json', '{}');
+    expect(build(), contains(('agent:codex', 'cloud:openai', 'uses')));
+    expect(service.reads.details.limitsSignedIn(codex.adapter), isTrue);
+  });
+
+  test('R3 #10: a keyring Codex said is signed out has an available line', () {
+    write('.codex/config.toml', 'cli_auth_credentials_store = "keyring"\n');
+    Set<(String, String, String)> build() => edges(
+      core.reads.graph.build(
+        [agent('codex')],
+        {'codex': AgentInfo()..model = 'gpt-6.1-sol'},
+        InventorySnapshot(),
+      ),
+    );
+    // Not asked yet: only Codex can tell, so as before it uses OpenAI.
+    expect(build(), contains(('agent:codex', 'cloud:openai', 'uses')));
+    final adapter = core.reads.catalog.adapter('codex')!;
+    final record = File(
+      nativeUsagePath('codex', core.reads.files.identity.environment),
+    )..createSync(recursive: true);
+    void said(bool signedIn) => record.writeAsStringSync(
+      jsonEncode({
+        'home': core.reads.details.usageHome(adapter),
+        'signedIn': signedIn,
+      }),
+    );
+    said(false);
+    expect(build(), contains(('agent:codex', 'cloud:openai', 'available')));
+    said(true);
+    expect(build(), contains(('agent:codex', 'cloud:openai', 'uses')));
+  });
+
+  test('#16: a key it names but is not set is no sign-in; nor a drop', () {
+    // Grok names no sign-in file, only XAI_API_KEY.
+    Map build(Map<String, String> extra) {
+      final service = CoreService(
+        environment: {
+          'HOME': home.path,
+          'PATH': '${home.path}/bin',
+          'MAPRISMA_DESKTOP': 'generic',
+          'MAPRISMA_SCAN_PROC': '${home.path}/proc',
+          ...extra,
+        },
+      );
+      return service.reads.graph.build(
+        [
+          AgentRecord(
+            service.reads.catalog.adapter('grok')!,
+            name: 'grok',
+            icon: '',
+            installed: true,
+          ),
+        ],
+        {'grok': AgentInfo()..model = 'grok-5'},
+        InventorySnapshot(),
+      );
+    }
+
+    expect(
+      edges(build({})),
+      contains(('agent:grok', 'cloud:xai', 'available')),
+    );
+    expect(
+      edges(build({'XAI_API_KEY': 'set'})),
+      contains(('agent:grok', 'cloud:xai', 'uses')),
+    );
+    // Its own provider, but no sign-in the app can start (Ask AI refuses it
+    // too); Codex has one.
+    final grok = nodes(build({}))['agent:grok']!;
+    expect([grok['own_provider'], grok['own_login']], ['cloud:xai', false]);
+    final codex = core.reads.graph.build(
+      [agent('codex')],
+      {},
+      InventorySnapshot(),
+    );
+    expect(nodes(codex)['agent:codex']!['own_login'], isTrue);
+  });
+
+  test('F2: servers of one name but other commands stay two boxes', () {
+    write(
+      '.claude.json',
+      jsonEncode({
+        'mcpServers': {
+          'filesystem': {'command': 'fs-a'},
+        },
+      }),
+    );
+    write('.codex/config.toml', '[mcp_servers.filesystem]\ncommand = "fs-b"\n');
+    final agents = [agent('claude'), agent('codex')];
+    final inv = core.reads.inventory.collect(agents, remember: false);
+    final servers = {for (final s in inv.mcp) s['id']: s};
+    expect(servers['filesystem']!['target'], 'fs-a');
+    expect(servers['filesystem~2']!['target'], 'fs-b');
+    expect(servers['filesystem~2']!['agents'], ['codex']);
+    final graph = core.reads.graph.build(agents, {}, inv);
+    expect(
+      edges(graph),
+      containsAll([
+        ('agent:claude', 'mcp:filesystem', 'mcp'),
+        ('agent:codex', 'mcp:filesystem~2', 'mcp'),
+      ]),
+    );
+    expect(nodes(graph)['mcp:filesystem~2']!['label'], 'filesystem');
+  });
+
+  test('F8: LM Studio and Jan on other ports', () {
+    RuntimeRecord scan(String key) =>
+        core.reads.inventory.providers.scan().singleWhere((r) => r.key == key);
+    write(
+      '.lmstudio/.internal/http-server-config.json',
+      jsonEncode({'port': 4321}),
+    );
+    expect(scan('lmstudio').address, '127.0.0.1:4321');
+    write('.lmstudio/.internal/http-server-config.json', '{}');
+    expect(scan('lmstudio').address, '127.0.0.1:1234');
+    expect(scan('jan').address, '127.0.0.1:6767');
+    write(
+      '.config/systemd/user/jan.service',
+      "[Service]\nExecStart=/bin/sh -c 'exec w --port 7001'\n",
+    );
+    expect(
+      [scan('jan').address, scan('jan').running],
+      ['127.0.0.1:7001', false],
+    );
+    write('proc/9/comm', 'jan-llama-worke\n');
+    write(
+      'proc/9/cmdline',
+      [
+        'jan-llama-worker',
+        '--preset',
+        'p.ini',
+        '--port',
+        '7002',
+        '',
+      ].join('\x00'),
+    );
+    expect(
+      [scan('jan').address, scan('jan').running],
+      ['127.0.0.1:7002', true],
+    );
+  });
+
+  test('F11: a reused model folder is on the map', () {
+    write('Old/models/qwen-7b-Q4_K_M.gguf', '');
+    final inv = core.reads.inventory.collect(
+      [],
+      remember: false,
+      modelFolders: ['${home.path}/Old/models'],
+    );
+    expect(inv.modelFolders, [
+      {
+        'path': '~/Old/models',
+        'models': ['qwen-7b-Q4_K_M'],
+      },
+    ]);
+    final node = nodes(
+      core.reads.graph.build([], {}, inv),
+    )['model:folder:~/Old/models:qwen-7b-q4_k_m']!;
+    expect([node['kind'], node['group']], ['model', '~/Old/models']);
+    // Saved in Settings, the map's own scan finds it.
+    File('${home.path}/.config/maprisma/settings.json')
+      ..createSync(recursive: true)
+      ..writeAsStringSync(
+        jsonEncode({
+          'model_folders': ['${home.path}/Old/models'],
+        }),
+      );
+    expect(
+      nodes(core.reads.buildMap()),
+      contains('model:folder:~/Old/models:qwen-7b-q4_k_m'),
+    );
+  });
+
+  test('#9: a runtime detected on another port is a broken line', () {
+    final provider = core.reads.details.provider(
+      'llama',
+      'http://127.0.0.1:8080/v1',
+    );
+    expect(provider['runtime'], 'llama.cpp');
+    final inv = InventorySnapshot()
+      ..runtimes.add(llama('127.0.0.1:9090', ['qwen']));
+    expect(localRuntime(provider, inv.runtimes), isNull);
+    expect(movedRuntime(provider, inv.runtimes), same(inv.runtimes.single));
+    final info = AgentInfo()
+      ..model = 'qwen (llama)'
+      ..providers.add({...provider, 'active': true});
+    var graph = core.reads.graph.build([agent('pi')], {'pi': info}, inv);
+    final lines = edges(graph);
+    expect(lines, contains(('agent:pi', 'runtime:llamacpp', 'failed')));
+    expect(lines, isNot(contains(('agent:pi', 'runtime:llamacpp', 'uses'))));
+    expect(
+      lines.where((e) => e.$1 == 'agent:pi' && e.$3 == 'default'),
+      isEmpty,
+    );
+    expect(nodes(graph).values.where((n) => n['kind'] == 'cloud'), isEmpty);
+    final failed = (graph['edges'] as List).cast<Map>().singleWhere(
+      (e) => e['kind'] == 'failed',
+    );
+    expect(failed['dangling'], 'qwen');
+    // An unqualified model on that endpoint (Claude with a local base URL):
+    // the same broken line, not its own online provider.
+    graph = core.reads.graph.build(
+      [agent('claude')],
+      {
+        'claude': AgentInfo()
+          ..model = 'qwen'
+          ..providers.add({
+            ...core.reads.details.provider(
+              'Anthropic API',
+              'http://localhost:8080',
+            ),
+            'active': true,
+          }),
+      },
+      inv,
+    );
+    expect(
+      edges(graph),
+      contains(('agent:claude', 'runtime:llamacpp', 'failed')),
+    );
+    expect(nodes(graph).values.where((n) => n['kind'] == 'cloud'), isEmpty);
+    // Detected on its usual port, or with no address known: found.
+    for (final address in ['127.0.0.1:8080', '']) {
+      inv.runtimes.single.address = address;
+      expect(localRuntime(provider, inv.runtimes), same(inv.runtimes.single));
+      expect(movedRuntime(provider, inv.runtimes), isNull);
+    }
+  });
+
+  test('#11: a reused file is hidden only when the LLM serves that file', () {
+    write('Old/models/qwen-Q8_0.gguf', '');
+    write('Old/models/gemma.gguf', '');
+    write('llama/qwen-Q4_K_M.gguf', '');
+    write('llama/gemma.gguf', '');
+    Link(
+      '${home.path}/Old/models/same.gguf',
+    ).createSync('${home.path}/llama/gemma.gguf');
+    final rt = llama('', ['qwen-Q4_K_M', 'gemma'])..modelsDir = '~/llama';
+    // The runtime's own folder and its own file (linked in) stay its own.
+    final reused = InventorySnapshot()..runtimes.add(rt);
+    final folders = core.reads.inventory.reusedFolders(reused.runtimes, [
+      '${home.path}/Old/models',
+      '${home.path}/llama',
+    ]);
+    expect(folders, [
+      {
+        'path': '~/Old/models',
+        'models': ['gemma', 'qwen-Q8_0'],
+      },
+    ]);
+    reused.modelFolders.addAll(folders);
+    final shown = nodes(core.reads.graph.build([], {}, reused));
+    expect(
+      shown.keys,
+      containsAll([
+        'model:folder:~/Old/models:qwen-q8_0',
+        'model:folder:~/Old/models:gemma',
+        'model:runtime:llamacpp:qwen-q4_k_m',
+      ]),
+    );
+  });
+
+  group('review 063 round 3', () {
+    Map<String, dynamic> llamaAt8080() =>
+        core.reads.details.provider('llama', 'http://127.0.0.1:8080/v1');
+    List<Map> failedLines(Map graph) => [
+      for (final e in (graph['edges'] as List).cast<Map>())
+        if (e['kind'] == 'failed') e,
+    ];
+
+    test('#6: a running agent on a moved local LLM invents no cloud', () {
+      final inv = InventorySnapshot()
+        ..runtimes.add(llama('127.0.0.1:9090', ['qwen']));
+      final info = AgentInfo()
+        ..model = 'qwen (llama)'
+        ..providers.add({...llamaAt8080(), 'active': true});
+      for (final instance in ['', 'qwen', 'qwen (llama)']) {
+        final graph = core.reads.graph.build(
+          [agent('pi')],
+          {'pi': info},
+          inv,
+          running: {
+            'pi': [instance],
+          },
+        );
+        expect(
+          nodes(graph).values.where((n) => n['kind'] == 'cloud'),
+          isEmpty,
+          reason: instance,
+        );
+        expect(edges(graph).where((e) => e.$1 == 'agent:pi'), {
+          ('agent:pi', 'runtime:llamacpp', 'failed'),
+        }, reason: instance);
+      }
+    });
+
+    test('#7: an inactive provider whose LLM moved stays, broken', () {
+      final ollama = RuntimeRecord('ollama', 'Ollama')
+        ..installed = true
+        ..running = true
+        ..address = '127.0.0.1:11434'
+        ..models = ['gemma3:4b'];
+      final inv = InventorySnapshot()
+        ..runtimes.addAll([
+          llama('127.0.0.1:9090', ['qwen']),
+          ollama,
+        ]);
+      final info = AgentInfo()
+        ..model = 'gemma3:4b (ollama)'
+        ..providers.addAll([
+          {
+            ...core.reads.details.provider(
+              'ollama',
+              'http://127.0.0.1:11434/v1',
+            ),
+            'active': true,
+          },
+          {...llamaAt8080(), 'active': false},
+        ]);
+      final graph = core.reads.graph.build([agent('pi')], {'pi': info}, inv);
+      final lines = edges(graph);
+      expect(lines, contains(('agent:pi', 'runtime:ollama', 'uses')));
+      expect(lines, contains(('agent:pi', 'runtime:llamacpp', 'failed')));
+      expect(
+        lines.where(
+          (e) =>
+              e.$1 == 'agent:pi' &&
+              e.$3 == 'default' &&
+              e.$2.startsWith('model:runtime:llamacpp'),
+        ),
+        isEmpty,
+      );
+      final broken = failedLines(graph).single;
+      expect(
+        [broken['failed'], broken['dangling'], broken['fixed']],
+        ['error', '', ''],
+      );
+      expect(
+        (broken['hints'] as List).single['text'],
+        contains('another port'),
+      );
+    });
+
+    test('#8: an agent the app cannot repair says where to change it', () {
+      final inv = InventorySnapshot()
+        ..runtimes.add(llama('127.0.0.1:9090', ['qwen']));
+      final graph = core.reads.graph.build(
+        [agent('claude'), agent('pi')],
+        {
+          'claude': AgentInfo()
+            ..model = 'qwen'
+            ..providers.add({
+              ...core.reads.details.provider(
+                'Anthropic API',
+                'http://localhost:8080',
+              ),
+              'active': true,
+            }),
+          'pi': AgentInfo()
+            ..model = 'qwen (llama)'
+            ..providers.add({...llamaAt8080(), 'active': true}),
+        },
+        inv,
+      );
+      final byAgent = {for (final e in failedLines(graph)) e['source']: e};
+      final claude = byAgent['agent:claude']!, pi = byAgent['agent:pi']!;
+      // No Repair (no hints to open the failure card), no Disconnect, no
+      // move: the reason, with the address to set.
+      expect(claude['fixed'], contains('127.0.0.1:9090'));
+      expect(claude['hints'], isNull);
+      // Pi has a planner: Repair stays.
+      expect(pi['fixed'], '');
+      expect(pi['hints'], isNotEmpty);
+    });
+
+    test('#9: a file a runtime serves by its path is not shown twice', () {
+      RuntimeRecord scan(String key) => core.reads.inventory.providers
+          .scan()
+          .singleWhere((r) => r.key == key);
+      List<Map<String, dynamic>> reused(RuntimeRecord rt) =>
+          core.reads.inventory.reusedFolders([rt], ['${home.path}/models']);
+      for (final name in ['qwen', 'gemma', 'phi', 'mistral', 'other']) {
+        write('models/$name.gguf', '');
+      }
+      // llama.cpp started with -m and no models folder.
+      write('proc/5/comm', 'llama-server\n');
+      write(
+        'proc/5/cmdline',
+        [
+          'llama-server',
+          '-m',
+          '${home.path}/models/qwen.gguf',
+          '',
+        ].join('\x00'),
+      );
+      // A router preset by its path, here through a link to it.
+      Link(
+        '${home.path}/gemma-link.gguf',
+      ).createSync('${home.path}/models/gemma.gguf');
+      write(
+        '.config/llama.cpp/models.ini',
+        '[gemma]\nmodel = ~/gemma-link.gguf\nctx-size = 8192\n',
+      );
+      final llama = scan('llamacpp');
+      expect(llama.modelsDir, '');
+      expect(llama.models, containsAll(['qwen', 'gemma']));
+      expect(reused(llama), [
+        {
+          'path': '~/models',
+          'models': ['mistral', 'other', 'phi'],
+        },
+      ]);
+      // KoboldCpp's .kcpps and vLLM's served file.
+      write(
+        '.config/koboldcpp/models/phi.kcpps',
+        jsonEncode({'model_param': '${home.path}/models/phi.gguf'}),
+      );
+      write('bin/koboldcpp', '');
+      Process.runSync('chmod', ['+x', '${home.path}/bin/koboldcpp']);
+      expect(reused(scan('koboldcpp'))[0]['models'], isNot(contains('phi')));
+      write('proc/6/comm', 'vllm\n');
+      write(
+        'proc/6/cmdline',
+        ['vllm', 'serve', '${home.path}/models/mistral.gguf', ''].join('\x00'),
+      );
+      expect(reused(scan('vllm'))[0]['models'], isNot(contains('mistral')));
+    });
+  });
+}

@@ -1,0 +1,3274 @@
+import 'dart:async';
+import 'support/python_transport.dart';
+import 'dart:convert';
+import 'dart:io';
+import 'package:maprisma/backend.dart';
+import 'package:maprisma/first_agent_view.dart';
+import 'package:maprisma/action_rules_window.dart';
+import 'package:maprisma/overlay_window.dart';
+import 'package:maprisma/agent_map.dart';
+import 'package:maprisma/settings_view.dart';
+import 'package:maprisma/main.dart';
+import 'package:maprisma/connections_view.dart';
+import 'package:maprisma/test_shots.dart';
+import 'package:maprisma/map_addons_focus.dart';
+import 'package:maprisma/map_groups.dart';
+import 'package:maprisma/mcp_catalog_view.dart';
+import 'package:maprisma/providers_view.dart' show ModelBrowser;
+import 'package:maprisma/map_smart_card.dart';
+import 'package:maprisma/performance_view.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:xterm/xterm.dart' show TerminalView;
+
+import 'support/a11y.dart';
+
+const service = r'''
+import json,sys,threading,time
+from pathlib import Path
+out=threading.Lock()
+connected=False
+welcome=False
+install_fails=False
+interrupted=False
+installed=False
+installed_runtime=False
+catalog_loads=0
+settings={'map_scan_interval':6,'map_light_fps':20,'flutter_theme_mode':'system','map_layers':['agents','online','local','models','mcp','skills'],'system_map_columns':['pc','disks','programs','tools','folders'],'language':'en'}
+if Path('start-settings.json').exists():settings.update(json.loads(Path('start-settings.json').read_text()))
+if Path('window_popup').exists():settings['window_mode']='popup'
+addon={'id':'fixture-addon','name':'Fixture adapter','version':'1.0','summary':'Summary',
+ 'kind':'agent','state':'verified','enabled':False,'supported':True,'verified':True,'provides':['test']}
+new_addon={**addon,'id':'catalog-addon','name':'Catalog adapter','version':'2.0','provides':['new']}
+runtime={'key':'fixture','name':'Fixture provider','installed':True,'running':True,'tunable':True,
+ 'address':'','models_dir':'','models':['example-model'],'can_load':True,
+ 'can_control':False,'can_import':False,'download':'file','focus':['runtime:fixture']}
+nodes=[{'id':ident,'kind':kind,'column':column,'label':label,'detail':''}
+ for ident,kind,column,label in [('agent:test','agent',1,'Test agent'),
+ ('runtime:fixture','runtime',2,'Fixture provider'),('model:runtime:fixture:example-model','model',3,'example-model'),
+ ('mcp:known-server','mcp',0,'Known server')]]
+tasks={};slow_polls=[]
+for line in sys.stdin:
+ q=json.loads(line);m=q['method'];p=q.get('params',{})
+ with open('requests.jsonl','a') as log:log.write(json.dumps(q)+'\n')
+ if m=='app.snapshot':r={'agents':[{'command':'test','name':'Test agent','version':'1.0','installed':True}]+([{'command':'codex','name':'Codex','version':'','installed':False}] if Path('missing_program').exists() else []),
+  'projects':{'test':{'history':[],'default':'/home/u','pinned':''}},'settings':settings,'language':'en','setup_needed':welcome,'theme':{}}
+ elif m=='settings.update':settings.update(p['values']);r=settings
+ elif m=='models.choose_preview':
+  old=settings.get('provider_models',{}).get(p['provider']);r={'preview':'choose-'+json.dumps([p['provider'],old,p['model']]),'empty':old==p['model'],'old':old,'new':p['model'],'line':'Fixture provider → example-model','focus':[]}
+ elif m in ('models.choose_apply','models.choose_undo'):
+  prov,old,new=json.loads(p['preview' if m=='models.choose_apply' else 'undo'].split('-',1)[1]);to=new if m=='models.choose_apply' else old;pm={k:v for k,v in settings.get('provider_models',{}).items() if k!=prov}
+  if to is not None:pm[prov]=to
+  settings['provider_models']=pm;r={'ok':True,'undo':'undo-'+json.dumps([prov,old,new])} if m=='models.choose_apply' else {'ok':True}
+ elif m=='settings.get':
+  # Another process may have changed them: other.json is merged in.
+  if Path('other.json').exists():settings.update(json.loads(Path('other.json').read_text()));Path('other.json').unlink()
+  r=settings
+ elif m=='desktop.snapshot':r={'name':'omarchy' if Path('omarchy').exists() else 'generic','theme_dir':''}
+ elif m=='window.popup':r={'placed':True,'x':10,'y':40,'width':p['width'],'height':p['height']}
+ elif m=='agents.usage_refresh':tasks['usage']={'ok':True};r={'task':'usage'}
+ elif m=='app.theme':r={'theme':json.loads(Path('theme.json').read_text()) if Path('theme.json').exists() else {}}
+ elif m=='addons.list':r={'addons':[addon]+([new_addon] if installed else [])+([{**addon,'id':'agent-codex','name':'Codex','enabled':True,'state':'loaded','loaded':True,'provides':['codex']}] if Path('missing_program').exists() else [])+([{**addon,'id':'llm-vllm','name':'vLLM','kind':'provider','enabled':True,'state':'loaded','loaded':True,'provides':['vllm'],'capabilities':['provider','installer']},{**addon,'id':'llm-fixture','name':'Fixture provider','kind':'provider','enabled':True,'state':'loaded','loaded':True,'provides':['fixture'],'capabilities':['provider','installer']},{**addon,'id':'providers-online','name':'Online providers','kind':'provider','enabled':True,'state':'loaded','loaded':True,'provides':['anthropic'],'capabilities':['provider']}] if Path('missing_runtime').exists() else [])}
+ elif m=='system.cached':r={'nodes':[],'edges':[],'notes':[],'helpers':[]}
+ elif m=='map.snapshot' and Path('switch').exists():r={'nodes':nodes+[{'id':'model:runtime:fixture:other-model','kind':'model','column':3,'label':'other-model','detail':''}],'edges':[{'source':'agent:test','target':'runtime:fixture','kind':'uses'},{'source':'agent:test','target':'model:runtime:fixture:example-model','kind':'default'}]+[{'source':'runtime:fixture','target':'model:runtime:fixture:'+n,'kind':'serves'} for n in ('example-model','other-model')],'activity':{},'pending':False}
+ elif m=='models.switch_preview':r={'plan':'opaque-switch','empty':False,'files':[],'links_add':[],'links_remove':[],'agents':['Test agent'],'notes':[],'model_actions':[],'focus':[]}
+ elif m=='map.snapshot':r={'nodes':[({**n,'status':'running'} if n['id']=='agent:test' and Path('agent_running').exists() else n) for n in nodes]+([{'id':'cloud:anthropic','kind':'cloud','column':2,'label':'Anthropic','detail':''}] if Path('foreign_cloud').exists() else []),'edges':([{'source':'agent:test','target':'cloud:anthropic','kind':'uses'}] if Path('foreign_cloud').exists() else [])+([{'source':'agent:test','target':'mcp:known-server','kind':'mcp'}] if connected else [])+([{'source':'runtime:fixture','target':'model:runtime:fixture:example-model','kind':'serves'}] if Path('serves').exists() else []),'activity':{},'pending':Path('pending').exists()}
+ elif m=='agents.action_preview':r={'action':p['action'],'name':'Codex','command':p['command'],'commands':['mise use -g codex'],'data':[],'runnable':True,'note':'','url':''}
+ elif m=='agents.traffic':r={'available':True,'agents':{}}
+ elif m=='agents.halt_preview':r={'instances':[{'label':'PID 42','preview':'halt-42'}]}
+ elif m=='system.refresh':
+  tasks['system']={'nodes':[{'id':'found:/data/models','kind':'models','label':'Models','path':'/data/models','found':'a','status':'found','provider':''}] if Path('found_on_pc').exists() else [],'edges':[],'notes':[],'helpers':[],'search_done':Path('found_on_pc').exists()};r={'task':'system'}
+ elif m=='sessions.start':r={'session':'s'+str(len(tasks)),'path':'/home/u'};tasks['s'+str(len(tasks))]={}
+ elif m=='sessions.read':r={'text':'','ended':Path('session_ended').exists()}
+ elif m=='sessions.write':r={'accepted':len(__import__('base64').b64decode(p['data'])),'ended':False}
+ elif m=='existing.preview':r={'plan':'opaque-existing','files':[],'notes':[],'empty':False}
+ elif m=='existing.apply':tasks['existing']={'ok':True};r={'task':'existing'}
+ elif m=='setup.detect':tasks['detect']={'installed':['fixture-addon']};r={'task':'detect'}
+ elif m=='addons.enable_found':
+  on=Path('enable_found').exists() and 'fixture-addon' in p['ids'] and not addon['enabled']
+  if on:addon['enabled']=True;addon['state']='loaded'
+  r={'addons':[addon],'switched_on':['fixture-addon'] if on else []}
+ elif m=='providers.snapshot':r={'local':[runtime]+([{**runtime,'key':'llamacpp','name':'llama.cpp','models':['Big'],'focus':['runtime:llamacpp']}] if Path('llama').exists() else []),'online':[],'folders':[]}
+ elif m=='connections.snapshot':r={'agents':[{'command':'test','name':'Test agent','mcp':True,'skills':False}],
+  'providers':[],'skills':[],'mcp':[{'id':'known-server','name':'Known server','target':'example.test','agents':['test'] if connected else []}], 'focus':['agent:test']}
+ elif m=='connections.author_preview':r={'plan':'opaque','empty':False,'files':[],'links_add':[],'links_remove':[],'kind':p['kind'],'agents':['Test agent'],'focus':['agent:test']}
+ elif m=='connections.preview':r={'plan':'opaque','empty':False,'files':[],'links_add':[],'links_remove':[],
+  'command':'test','item':'known-server','remove':False,'focus':['agent:test','mcp:known-server']}
+ elif m=='connections.move_preview':r={'plan':'opaque-remove','empty':False,'files':[],'links_add':[],'links_remove':[],'focus':['agent:test','mcp:known-server']}
+ elif m=='connections.undo':connected=False;r={'restored':['fixture'],'choice_failures':1 if Path('choice_fails').exists() else 0}
+ elif m=='connections.apply' and p['plan']=='opaque-measure':Path('tuned').touch();tasks['connect']={'ok':True,'undo':'undo-tuned'};r={'task':'connect'}
+ elif m=='connections.apply':connected=p['plan']!='opaque-remove';tasks['connect']={'ok':True,'undo':'undo-token','choice_failures':1 if Path('choice_fails').exists() else 0};r={'task':'connect'}
+ elif m=='providers.run':
+  op=p['operation'];tasks[op]=({'repos':[{'id':'owner/repo'}]} if op=='models.search' else
+   {'files':[{'name':'model.gguf','quant':'Q4','size':123}]} if op=='models.files' else {'ok':True})
+  r={'task':op,'focus':['runtime:fixture']}
+ elif m=='addons.catalog':
+  catalog_loads+=1
+  entry={'id':'catalog-addon','name':'Catalog adapter','version':'2.0','kind':'agent',
+   'supported':True,'action':'' if installed else 'install','installed_version':'2.0' if installed else '',
+   'preview':'catalog-'+str(catalog_loads),'reads':[],'sends':[],'capabilities':[],'privacy':1}
+  tasks['catalog']={'entries':[entry]};r={'task':'catalog'}
+ elif m=='addons.install':
+  installed=not install_fails
+  tasks['install']={'ok':True};r={'task':'install'}
+ elif m=='guide.snapshot':
+  guides=sum(1 for l in open('requests.jsonl') if '"guide.snapshot"' in l)
+  steps=[{'title':'llama.cpp','done':installed_runtime,'detail':'','action':'providers' if installed_runtime else 'install-runtime','target':'llamacpp'},
+         {'title':'Connections','done':False,'detail':'','action':'providers'}]
+  tasks['guide']={'routes':[{'id':'local','kind':'local','title':'Local route','access':'On this PC','command':'test','name':'Test agent','verified':False,'steps':steps}],'selected':'local','loads':guides}
+  r={'task':'guide'}
+ elif m=='installers.preview':
+  tasks['ipreview']={'installer':'inst-1','kind':p['kind'],'key':p['key'],'name':'llama.cpp','version':'b9000-'+p.get('build','vulkan'),'size':10,
+   'files':[{'name':'llama.tar.gz','size':10}],'folder':'/home/u/.local/share/maprisma/llamacpp','models':'/home/u/.local/share/maprisma/llamacpp/models',
+   'gpu':{'vendor':'amd','name':'AMD · card1'},'build':p.get('build','vulkan'),'builds':[['vulkan','Vulkan'],['cpu','CPU']],'has_service':True}
+  r={'task':'ipreview'}
+ elif m=='installers.install':installed_runtime=True;tasks['iinstall']={'ok':True,'kind':'runtime','key':'llamacpp','version':'b9000'};r={'task':'iinstall'}
+ elif m=='agents.details':r={'model':'','plan':'','providers':[],'limits':[],'today_prompts':0,'today_sessions':0,'today_tokens':0,'actions':{}}
+ elif m=='agents.security':r={'agent':'test','name':'Test agent','known':True,'level':'high','rules':[],'files':[],'note':'',
+  'settings':[{'key':'ask','title':'Asks first','explain':'','editable':True,'current':'never','default':'always','recommended':'always',
+   'choices':[{'value':'always','label':'Always','explain':'','risk':1},{'value':'never','label':'Never','explain':'','risk':3}]}],
+  'risks':[{'level':'high','title':'It never asks','why':'','lower':'','fix_key':'ask','fix_value':'always'}]}
+ elif m=='agents.security_preview':r={'plan':'opaque-security','empty':False,'files':[],'links_add':[],'links_remove':[],'focus':['agent:test']}
+ elif m=='mcp.catalog':
+  tasks['mcpcat']={'groups':[{'key':'think','label':'Thinking and memory'}],'picks':[{'key':'time','title':'Time','group':'think','maker':'MCP project',
+   'trust':'Reference server · MCP project','trust_hint':'','about':'The current time.','tries':[],'needs':'Nothing.','repository':'https://github.com/x/time','key_url':'',
+   'server':{'name':'time','short':'time','title':'Time','description':'','version':'1.0','repository':'','website':'','updated':'','status':'',
+    'publisher':{'kind':'','who':''},'options':[{'option':'opt-time','kind':'pypi','label':'pypi · mcp-server-time 1.0','runnable':True,'command':'uvx',
+     'args':['mcp-server-time==1.0'],'env':[],'url':'','headers':[],'needs':[],'on_command_line':[]}]}}]}
+  r={'task':'mcpcat'}
+ elif m=='models.tuning' and Path('slots_full').exists():Path('slots_full').unlink();print(json.dumps({'id':q['id'],'error':{'code':'operation_failed'}}),flush=True);continue
+ elif m=='models.tuning' and p.get('key')=='llamacpp' and Path('llama').exists():tasks['tune']={'runtime':'llama.cpp','key':'llamacpp','gpu':'GPU','vram':24<<30,'stacks':['Vulkan'],'build':'vulkan','builds':[],'devices':'','settings':{'*':{}},'tuning':{},'per_model':True,'models':[],'loaded':[],'vram_used':0,'helpers':[],'build_path':'/x/llama-server','untuned':[] if Path('tuned').exists() else ['Big']};r={'task':'tune'}
+ elif m=='models.tune' and Path('card_busy').exists():tasks['measure']={'refused':'The card is in use: a model is loaded in llama.cpp. Measure again when it is idle.','item':'llama.cpp','models':[],'skipped':[],'notes':[]};r={'task':'measure'}
+ elif m=='models.tune':tasks['measure']={'plan':'opaque-measure','empty':False,'files':[{'path':'~/.config/llama.cpp/models.ini','added':5,'removed':1}],'links_add':[],'links_remove':[],'item':'llama.cpp','build':'vulkan','models':[{'name':'Big','ctx':131072,'ubatch':1024,'batch':2048,'pp':8500,'tg':235}],'skipped':[],'notes':[],'focus':['runtime:llamacpp']};r={'task':'measure'}
+ elif m=='models.tuning':tasks['tune']={'runtime':'Fixture provider','key':'fixture','gpu':'GPU','vram':8<<30,'stacks':[],'build':'','builds':[],'devices':'','settings':{'*':{}},'tuning':{'mode':['a|b','A mode']},'per_model':False,'models':[],'loaded':[],'vram_used':0,'helpers':[{'command':'test','name':'Test agent'}]};tasks['tune_slow']=tasks['tune'];r={'task':'tune_slow' if Path('slow_tuning').exists() and p.get('key')=='fixture' else 'tune'}
+ elif m=='models.tuning_ask':tasks['ask']={'summary':'One thing.','agent':p['command'],'suggestions':[{'kind':'setting','title':'Use b','why':'Faster.','model':'*','key':'mode','value':'b'}]};r={'task':'ask'}
+ elif m=='models.tuning_preview':r={'plan':'opaque-tune','empty':False,'files':[{'path':'~/.config/x.ini','added':1,'removed':0}],'links_add':[],'links_remove':[],'item':'Fixture provider','notes':[],'focus':['runtime:fixture']}
+ elif m=='models.slots_preview' and Path('no-slots').exists():r={'empty':True}
+ elif m=='models.slots_preview':r={'plan':'opaque-slots','empty':False,'files':[{'path':'~/.config/llama.cpp/server.env','added':1,'removed':0}],'links_add':[],'links_remove':[],'notes':['Fixture provider keeps 2 models loaded at once'],'warnings':['Too big together.'],'reload':True,'focus':['runtime:fixture']}
+ elif m=='models.slots_reload':r={'ok':True}
+ elif m=='updates.check':tasks['up']={'updates':[{'kind':'agent','column':'agents','key':'test','name':'Test agent','current':'1.0','available':'1.1','command':['mise','upgrade','test'],'page':False}]};r={'task':'up'}
+ elif m=='updates.run':r=({'started':True} if p.get('running_ok') else {'started':False,'running':1,'here':0})
+ elif m=='checks.mcp_check':tasks['mcpc']={'on':True,'summary':'1 update','servers':2,'agent':'Test agent','task_agent':'Test agent','due':False,'updates':[{'name':'fetch','column':'mcp','app':'@acme/fetch-mcp','current':'1.4.2','latest':'1.5.0','url':'https://www.npmjs.com/package/@acme/fetch-mcp','notes':'Faster.','source':'npm','program':'','on_pc':False,'text':'MCP server fetch 1.5.0 is available (you have 1.4.2)'}]};r={'task':'mcpc'}
+ elif m=='checks.mcp_release':r={'opened':True}
+ elif m=='changes.undo' and Path('slow').exists():
+  # Answered only once 'release' exists: the app stays busy meanwhile.
+  def later(i=q['id']):
+   while not Path('release').exists():time.sleep(0.05)
+   with out:print(json.dumps({'id':i,'result':{'ok':True,'restored':[]}}),flush=True)
+  threading.Thread(target=later,daemon=True).start();continue
+ elif m=='changes.history':r={'changes':[{'id':'20261030-100000-000000','when':'2026-10-30T10:00:00.000','changed':['~/.claude.json'],'count':1,'undoable':['~/.claude.json']},{'id':'20261029-090000-000000','when':'2026-10-29T09:00:00.000','changed':['~/.codex/config.toml'],'count':1,'undoable':[]}]}
+ elif m=='changes.undo':r={'ok':True,'restored':['~/.claude.json']}
+ elif m=='checks.mcp_task':r={'preview':'mcp-prev','name':'Test agent','prompt':'The MCP server "fetch" runs the npm package @acme/fetch-mcp pinned to 1.4.2.','topic':'mcp-update'}
+ elif m=='gpu.snapshot':tasks['gpu']={'vram_used':0,'vram_total':0,'busy':None,'runtimes':{},'badges':{}};r={'task':'gpu'}
+ elif m=='map.badges':r={'badges':{},'rate_due':False}
+ elif m in ('agents.projects','agents.costs'):r={'card':None}
+ elif m=='found.scan':tasks['found']={'mcp':[],'versions':[],'not_looked':[],'skills':[]};r={'task':'found'}
+ elif m=='found.hints':r={'lines':[{'kind':'found','column':'mcp','text':'New on this PC: wordcraft','mcp':True,'skills':False}]}
+ elif m=='found.list':r=({'checked':True,'set_up':1,'not_looked':[],'items':[{'name':'wordcraft','where':'~/.local/bin/wordcraft-cli','command':['/h/.local/bin/wordcraft-cli','mcp','--headless'],'sure':True,'version':'','new':True,'ready':True},{'name':'vectorcraft','where':'vectorcraft.AppImage','command':['/h/Applications/vectorcraft-1.2.0/usr/bin/vectorcraft-cli','mcp'],'sure':True,'version':'1.2.0','new':False,'ready':False,'program':'/h/Applications/vectorcraft-1.2.0/usr/bin/vectorcraft-cli','unpack_text':'Unpacks vectorcraft.AppImage into ~/Applications/vectorcraft-1.2.0 first (the server lives inside it).'}],'updates':[{'name':'gridcraft','from':'0.7.0','to':'0.8.0','program':'/h/Applications/gridcraft-0.8.0/usr/bin/gridcraft-cli','ready':True,'used_by':'Update · used by Claude Code'}],'not_looked_text':'1 AppImage not looked into yet (wordcraft.AppImage).','looking_text':'Looking inside 1 AppImages…'} if p['kind']=='mcp' else {'checked':True,'items':[]})
+ elif m=='found.seen':r={'ok':True}
+ elif m=='found.update_preview':r={'plan':'opaque-update','empty':False,'files':[{'path':'~/.claude.json','added':1,'removed':1}],'links_add':[['~/.local/bin/gridcraft','/h/Applications/gridcraft-0.8.0/usr/bin/gridcraft-cli']],'links_remove':[['~/.local/bin/gridcraft','/h/Applications/gridcraft-0.7.0/usr/bin/gridcraft-cli']],'retire':['~/Applications/gridcraft-0.7.0'],'notes':['The old version is kept with the backup for 7 days: Undo brings everything back.'],'kind':'mcp','focus':['mcp:gridcraft']}
+ elif m in ('found.look_inside','found.unpack'):tasks[m]={'ok':True};r={'task':m}
+ elif m=='addons.hints':r={'lines':[{'kind':'new','text':'Goose is on this PC but not on the map','ids':['agent-goose'],'column':'agents'},{'kind':'updates','column':'agents','text':'Add-on updates ready: Catalog adapter','updates':[{'id':'catalog-addon','name':'Catalog adapter','version':'2.1','current':'2.0','preview':'catalog-1'}]}]}
+ elif m=='health.report':tasks['hr']=(json.loads(Path('health.json').read_text()) if Path('health.json').exists() else {'error':1,'hint':0,'level':'error','summary':'1 thing to fix','open_text':'1 open problem','areas':[{'key':'agents','title':'Agents','icon':'','findings':[{'level':'error','column':'agents','title':'Test agent: Not signed in','text':'','action':['details','test']}]}],'uses':[{'key':'coding','title':'Vibe coding','icon':'','blurb':'Describe what you want.','have':['Test agent'],'steps':[{'level':'hint','column':'mcp','title':'Add skills','text':'Ready-made workflows.','action':['addskills']}],'level':'almost'}]});r={'task':'hr'}
+ elif m=='agents.health':r={'state':'warn','summary':'Works, one thing to look at: No model chosen','checks':[{'state':'warn','title':'No model chosen','detail':'','step':'Select it on the map.','command':'','sign_in':''}]}
+ elif m=='help.snapshot':r={'manual':True}
+ elif m=='help.open_manual':r={'opened':True}
+ elif m=='jobs.list':r={'jobs':[{'id':'aaaaaaaaaaaa','kind':'download' if Path('llama').exists() else 'model','title':'m.gguf · Fixture provider','state':'interrupted','fraction':0.4}] if interrupted else []}
+ elif m=='jobs.discard':interrupted=False;r={'ok':True}
+ elif m=='jobs.continue':interrupted=False;tasks['cont']={'ok':True};r={'task':'cont','focus':['runtime:fixture']}
+ elif m=='skills.web_search':tasks['sks']={'skills':[{'name':'pdf','skill_id':'pdf','repo':'a/skills','installs':3}]};r={'task':'sks'}
+ elif m=='skills.web_fetch':tasks['skf']={'fetched':'f1','name':'pdf','repo':'a/skills','skill_id':'pdf','description':'Reads PDFs.','files':['SKILL.md'],'scripts':[],'targets':['~/.agents/skills'],'agents':[{'command':'test','name':'Test agent'}]};r={'task':'skf'}
+ elif m=='skills.web_preview':r={'plan':'opaque-skill','empty':False,'files':[],'new_files':['~/.agents/skills/pdf/SKILL.md'],'links_add':[],'links_remove':[],'kind':'skills','agents':[],'focus':['agent:test']}
+ elif m=='mcp.tools_cached':r={'cached':None}
+ elif m=='mcp.tools':tasks['tools']={'status':'ok','checked':'2026-10-29T12:00:00','server':'known 1','tools':[{'name':'lookup','description':'Looks up'}],'prompts':[]};r={'task':'tools'}
+ elif m=='mcp.option_preview':r={'plan':'opaque-catalog','empty':False,'files':[],'links_add':[],'links_remove':[],'kind':'mcp','agents':['Test agent'],'focus':['agent:test']}
+ elif m=='map.smart_ask' and Path('smart_menu').exists():tasks['sa']={'status':'proposal','summary':'','proposal':'p1','candidates':[{'id':'c1','kind':'menu_action','title':'Fixture provider → example-model','subtitle':'Connect','reason':'','fit':'ok','size':0,'area':'models','step':'choose','key':'fixture','model':'model:runtime:fixture:example-model'},{'id':'c2','kind':'menu_action','title':'Find existing AI','subtitle':'Find existing AI','reason':'','fit':'ok','size':0,'area':'existing','step':'find','key':''}]};r={'task':'sa'}
+ elif m=='map.smart_ask' and Path('smart_download').exists():tasks['sa']={'status':'proposal','summary':'','proposal':'p1','candidates':[{'id':'c1','title':'qwen','subtitle':'a/qwen','reason':'','fit':'ok','size':1,'connect':[{'command':'pi','name':'Pi'}]}]};r={'task':'sa'}
+ elif m=='map.smart_review':r={'title':'qwen','subtitle':'a/qwen','size':1,'fit':'ok','runtime':'Fixture provider'}
+ elif m=='map.smart_run':tasks['dl']={'ok':True};r={'task':'dl'}
+ elif m=='map.smart_ask':tasks['sa']={'status':'proposal','summary':'','proposal':'p1','candidates':[{'id':'c1','kind':'provider_action','title':'Fixture provider','subtitle':'Performance','reason':'','fit':'ok','size':0,'key':'fixture','step':'performance','action':{'kind':'provider_action'}}]};r={'task':'sa'}
+ elif m=='map.smart_helpers':r={'helpers':[{'command':'local-helper','name':'Local helper','local':True}] if Path('smart_helpers').exists() else []}
+ elif m=='tasks.status':r=({'state':'failed'} if p['task']=='install' and install_fails else {'state':'running'} if p['task']=='tune_slow' and slow_polls.append(1) is None and len(slow_polls) <= 15 else {'state':'done','result':tasks[p['task']]})
+ else:r={}
+ with out:print(json.dumps({'id':q['id'],'result':r}),flush=True)
+''';
+
+Future<void> settleService(WidgetTester tester) async {
+  for (var i = 0; i < 12; i++) {
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 15)),
+    );
+    await tester.pump(const Duration(milliseconds: 50));
+  }
+}
+
+Future<void> unmountApp(WidgetTester tester) async {
+  await tester.pumpWidget(const SizedBox());
+  await tester.runAsync(
+    () => Future<void>.delayed(const Duration(milliseconds: 50)),
+  );
+  await tester.pump(const Duration(seconds: 36));
+}
+
+Future<Directory> mountApp(
+  WidgetTester tester, {
+  bool welcome = false,
+  bool installFails = false,
+  bool interrupted = false,
+  double? areaWidth,
+  void Function(Directory dir)? beforeStart,
+}) async {
+  rootBundle.clear();
+  final dir = Directory.systemTemp.createTempSync('maprisma-review-cards-');
+  beforeStart?.call(dir);
+  File('${dir.path}/flutter_backend.py').writeAsStringSync(
+    service
+        .replaceFirst('welcome=False', 'welcome=${welcome ? 'True' : 'False'}')
+        .replaceFirst(
+          'install_fails=False',
+          'install_fails=${installFails ? 'True' : 'False'}',
+        )
+        .replaceFirst(
+          'interrupted=False',
+          'interrupted=${interrupted ? 'True' : 'False'}',
+        ),
+  );
+  final backend = await tester.runAsync(
+    () => PythonTransport.start(dir.path).then(Backend.fromTransport),
+  );
+  tester.view.physicalSize = const Size(1600, 900);
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.resetPhysicalSize);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  addTearDown(() => dir.deleteSync(recursive: true));
+  final app = MaprismaApp(
+    key: UniqueKey(),
+    connectBackend: () async => backend!,
+    windowShots: WindowShots('${dir.path}/shots'),
+  );
+  await tester.pumpWidget(
+    areaWidth == null
+        ? app
+        : Align(
+            child: SizedBox(width: areaWidth, child: app),
+          ),
+  );
+  await settleService(tester);
+  return dir;
+}
+
+List<Map<String, dynamic>> requests(Directory dir) => File(
+  '${dir.path}/requests.jsonl',
+).readAsLinesSync().map((l) => jsonDecode(l) as Map<String, dynamic>).toList();
+int forcedScans(Directory dir) => requests(dir)
+    .where((q) => q['method'] == 'map.snapshot' && q['params']['force'] == true)
+    .length;
+int snapshots(Directory dir) =>
+    requests(dir).where((q) => q['method'] == 'app.snapshot').length;
+
+Future<void> openFromHelp(WidgetTester tester, String tab) async {
+  await tester.tap(find.byKey(const ValueKey('help-open')));
+  await settleService(tester);
+  await tester.tap(find.byKey(ValueKey('help-tab-$tab')));
+  await settleService(tester);
+}
+
+void main() {
+  setUp(() {
+    tuneDelay = const Duration(milliseconds: 10);
+    tuneTries = 3;
+  });
+
+  testWidgets('leaving Providers and models brings the map up to date', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await openFromHelp(tester, 'Providers and models');
+    var before = forcedScans(dir);
+    await tester.tap(find.text('Back').last);
+    await settleService(tester);
+    expect(forcedScans(dir), before, reason: 'nothing changed');
+
+    await openFromHelp(tester, 'Providers and models');
+    await tester.tap(find.text('Models (1)'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Load'));
+    await settleService(tester);
+    before = forcedScans(dir);
+    await tester.tap(find.byKey(const ValueKey('task-back')).last);
+    await settleService(tester);
+    expect(forcedScans(dir), before, reason: 'still on the page');
+    await tester.tap(find.text('Back').last);
+    await settleService(tester);
+    expect(forcedScans(dir), before + 1);
+    await unmountApp(tester);
+  });
+
+  testWidgets('leaving the guide leaves it; a page from a box returns there', (
+    tester,
+  ) async {
+    await mountApp(tester);
+    await openFromHelp(tester, 'Your first agent');
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await settleService(tester);
+    expect(find.byType(FirstAgentView), findsNothing);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('a window blocks the header; Esc leads out of it', (
+    tester,
+  ) async {
+    await mountApp(tester);
+    await tester.tap(find.byKey(const ValueKey('help-open')));
+    await settleService(tester);
+    expect(find.byType(OverlayWindow), findsOneWidget);
+    for (final key in ['problems-open', 'map-legend']) {
+      expect(
+        tester.widget<IconButton>(find.byKey(ValueKey(key))).onPressed,
+        isNull,
+      );
+    }
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.f5);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.f5);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await settleService(tester);
+    expect(find.byType(OverlayWindow), findsNothing);
+    await unmountApp(tester);
+  });
+
+  testWidgets('at the start, what is found on this PC is put on the map', (
+    tester,
+  ) async {
+    final dir = await mountApp(
+      tester,
+      beforeStart: (dir) => File('${dir.path}/enable_found').createSync(),
+    );
+    await settleService(tester);
+    final asked = requests(
+      dir,
+    ).where((q) => q['method'] == 'addons.enable_found').toList();
+    expect(asked, hasLength(1));
+    expect(asked.single['params'], {
+      'ids': ['fixture-addon'],
+    });
+    // The map and the add-ons are read again after it switched one on.
+    final after = requests(
+      dir,
+    ).skipWhile((q) => q['method'] != 'addons.enable_found');
+    expect(after.where((q) => q['method'] == 'addons.list'), isNotEmpty);
+    await unmountApp(tester);
+  });
+
+  testWidgets(
+    'a local LLM add-on whose program is missing offers Install in the providers card',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (dir) => File('${dir.path}/missing_runtime').createSync(),
+      );
+      await settleService(tester);
+      expect(find.byKey(const ValueKey('card-missing-vllm')), findsOneWidget);
+      // Installed (a box on the map) or no installer: no such card.
+      expect(find.byKey(const ValueKey('card-missing-fixture')), findsNothing);
+      expect(
+        find.byKey(const ValueKey('card-missing-anthropic')),
+        findsNothing,
+      );
+      await tester.tap(find.text('vLLM · Not installed'));
+      await settleService(tester);
+      final asked = requests(
+        dir,
+      ).where((q) => q['method'] == 'installers.preview').toList();
+      expect(asked.single['params'], {'kind': 'runtime', 'key': 'vllm'});
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settleService(tester);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'an agent add-on whose program is missing offers Install on the map',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (dir) => File('${dir.path}/missing_program').createSync(),
+      );
+      await settleService(tester);
+      final card = find.byKey(const ValueKey('card-missing-codex'));
+      expect(card, findsOneWidget);
+      // The installed agent and add-ons that are off get no such card.
+      expect(find.byKey(const ValueKey('card-missing-test')), findsNothing);
+      await tester.tap(find.text('Codex · Not installed'));
+      await settleService(tester);
+      final asked = requests(
+        dir,
+      ).where((q) => q['method'] == 'agents.action_preview').toList();
+      expect(asked.single['params'], containsPair('command', 'codex'));
+      expect(asked.single['params'], containsPair('action', 'install'));
+      // The normal review shows what runs before anything is installed.
+      expect(find.text('mise use -g codex'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settleService(tester);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets('the add cards open the MCP catalog and the model download', (
+    tester,
+  ) async {
+    await mountApp(
+      tester,
+      beforeStart: (dir) => File('${dir.path}/serves').createSync(),
+    );
+    await settleService(tester);
+    // The MCP column's own page: its add cards, no add-on section.
+    tester.widget<MapGroupCard>(find.byType(MapGroupCard).first).onExpand();
+    await settleService(tester);
+    final page = tester.widget<MapAddonsFocus>(find.byType(MapAddonsFocus));
+    expect(page.category, 0);
+    expect(find.byKey(const ValueKey('focus-add-mcp-')), findsOneWidget);
+    expect(find.byKey(const ValueKey('focus-add-skills-')), findsOneWidget);
+    expect(find.text('Look for add-ons online'), findsNothing);
+    page.onBack();
+    await settleService(tester);
+    // On the map: last in the MCP card.
+    await tester.tap(find.byKey(const ValueKey('card-add-0:mcp:')));
+    await settleService(tester);
+    expect(find.byType(McpCatalogView), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await settleService(tester);
+    // Last in the model folder card: the download of the local LLM serving it.
+    await tester.tap(find.byKey(const ValueKey('card-add-3:model:')));
+    await settleService(tester);
+    expect(
+      tester.widget<ModelBrowser>(find.byType(ModelBrowser)).runtime['key'],
+      'fixture',
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await settleService(tester);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('first-run setup: nothing switched on before it is done', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester, welcome: true);
+    await settleService(tester);
+    expect(
+      requests(dir).where((q) => q['method'] == 'addons.enable_found'),
+      isEmpty,
+    );
+    await unmountApp(tester);
+  });
+
+  testWidgets(
+    'while an agent runs, only its own add-on waits, says why, and unlocks when it ends',
+    (tester) async {
+      final dir = await mountApp(tester);
+      int setEnabled() => requests(
+        dir,
+      ).where((q) => q['method'] == 'addons.set_enabled').length;
+      int installs() =>
+          requests(dir).where((q) => q['method'] == 'addons.install').length;
+      MapAddonsFocus page() => tester.widget<MapAddonsFocus>(
+        find.byType(MapAddonsFocus, skipOffstage: false),
+      );
+      const reason =
+          'Test agent is running in a terminal. Its add-on can be switched off, updated or removed when it has finished.';
+      tester
+          .widget<IconButton>(find.byKey(const ValueKey('start-agent-test')))
+          .onPressed!();
+      await settleService(tester);
+      expect(find.byType(TerminalView), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('terminal-back')));
+      await settleService(tester);
+      // The Agents card on the map opens its add-ons page.
+      tester.widget<AgentMap>(find.byType(AgentMap)).onExpandGroup!(1);
+      await settleService(tester);
+
+      // fixture-addon provides `test`, the running agent: it is held.
+      expect(page().locked, {
+        'fixture-addon': ['Test agent'],
+      });
+      expect(find.byKey(const ValueKey('addons-locked')), findsOneWidget);
+
+      // Switching on is allowed while the agent runs (task 028).
+      unawaited(page().onToggle('fixture-addon', true));
+      await settleService(tester);
+      expect(setEnabled(), 1);
+
+      // Switching it off is not, and never silently.
+      unawaited(page().onToggle('fixture-addon', false));
+      await settleService(tester);
+      expect(setEnabled(), 1);
+      final message = find.byKey(const ValueKey('addons-locked-message'));
+      expect(message, findsOneWidget);
+      expect(
+        find.descendant(of: message, matching: find.text(reason)),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.descendant(of: message, matching: find.text('Show terminal')),
+      );
+      await settleService(tester);
+      expect(find.byType(TerminalView), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('terminal-back')));
+      await settleService(tester);
+
+      // An update of the held add-on waits too; Install from file stays open.
+      ScaffoldMessenger.of(
+        tester.element(find.byType(MapAddonsFocus)),
+      ).hideCurrentSnackBar();
+      await settleService(tester);
+      unawaited(
+        Future.sync(
+          () => page().onInstall({
+            'id': 'fixture-addon',
+            'name': 'Fixture adapter',
+            'version': '2.0',
+            'kind': 'agent',
+            'action': 'update',
+            'preview': 'catalog-1',
+          }),
+        ),
+      );
+      await settleService(tester);
+      expect(message, findsOneWidget);
+      expect(find.byType(OverlayWindow), findsNothing);
+      expect(installs(), 0);
+      expect(
+        tester
+            .widget<TextButton>(
+              find.byKey(const ValueKey('addons-install-file')),
+            )
+            .onPressed,
+        isNotNull,
+      );
+
+      // The details sheet: Show terminal really shows it (review 027).
+      final item = {
+        ...page().items.firstWhere((i) => i['id'] == 'fixture-addon'),
+        'enabled': true,
+      };
+      final sheet = find.byType(BottomSheet);
+      page().onMenu(tester.element(find.byType(MapAddonsFocus)), item);
+      await settleService(tester);
+      expect(find.byKey(const ValueKey('addon-sheet-locked')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('addon-sheet-show-terminal')));
+      await settleService(tester);
+      expect(sheet, findsNothing);
+      expect(find.byType(TerminalView), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('terminal-back')));
+      await settleService(tester);
+
+      // An open sheet unlocks when the agent ends.
+      page().onMenu(tester.element(find.byType(MapAddonsFocus)), item);
+      await settleService(tester);
+      final switchOff = find.descendant(
+        of: sheet,
+        matching: find.widgetWithText(TextButton, 'Switch off'),
+      );
+      expect(tester.widget<TextButton>(switchOff).onPressed, isNull);
+
+      // The agent ends: the page unlocks without a restart.
+      File('${dir.path}/session_ended').writeAsStringSync('');
+      await settleService(tester);
+      expect(find.byKey(const ValueKey('addon-sheet-locked')), findsNothing);
+      expect(tester.widget<TextButton>(switchOff).onPressed, isNotNull);
+      await tester.tap(
+        find.descendant(of: sheet, matching: find.text('Close')),
+      );
+      await settleService(tester);
+      expect(page().locked, isEmpty);
+      expect(find.byKey(const ValueKey('addons-locked')), findsNothing);
+      unawaited(page().onToggle('fixture-addon', false));
+      await settleService(tester);
+      expect(setEnabled(), 2);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'llama.cpp models not measured for the build are tuned once at start, with Undo',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (dir) => File('${dir.path}/llama').writeAsStringSync(''),
+      );
+      List<Map> calls(String method) =>
+          requests(dir).where((q) => q['method'] == method).toList();
+      // The background check runs after the first snapshot.
+      for (var i = 0; i < 40 && calls('connections.apply').isEmpty; i++) {
+        await settleService(tester);
+      }
+      expect(calls('models.tune').single['params'], {
+        'key': 'llamacpp',
+        'models': ['Big'],
+      });
+      expect(calls('connections.apply').single['params'], {
+        'plan': 'opaque-measure',
+      });
+      await settleService(tester);
+      final message = find.byKey(const ValueKey('tuned-message'));
+      expect(message, findsOneWidget);
+      expect(
+        find.descendant(
+          of: message,
+          matching: find.textContaining(
+            'Big: context 128k · 8500 tokens/s prompt · 235 tokens/s answer',
+          ),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.descendant(of: message, matching: find.text('Undo')),
+      );
+      await settleService(tester);
+      expect(calls('connections.undo').single['params'], {
+        'undo': 'undo-tuned',
+      });
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'background tuning waits while the core is busy, then refreshes the views',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (dir) {
+          File('${dir.path}/llama').writeAsStringSync('');
+          File('${dir.path}/slots_full').writeAsStringSync('');
+        },
+      );
+      List<Map> calls(String method) =>
+          requests(dir).where((q) => q['method'] == method).toList();
+      for (var i = 0; i < 60 && calls('connections.apply').isEmpty; i++) {
+        await settleService(tester);
+      }
+      // Refused once (four tasks running), asked again, then measured.
+      expect(
+        calls('models.tuning').where((q) => q['params']['key'] == 'llamacpp'),
+        hasLength(2),
+      );
+      expect(calls('models.tune'), hasLength(1));
+      final applied = requests(
+        dir,
+      ).indexWhere((q) => q['method'] == 'connections.apply');
+      await settleService(tester);
+      // The views were read again after the apply.
+      expect(
+        requests(
+          dir,
+        ).skip(applied + 1).where((q) => q['method'] == 'app.snapshot'),
+        isNotEmpty,
+      );
+      expect(find.byKey(const ValueKey('tuned-message')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets('a llama.cpp download continued from the job strip is measured', (
+    tester,
+  ) async {
+    final dir = await mountApp(
+      tester,
+      beforeStart: (dir) {
+        File('${dir.path}/llama').writeAsStringSync('');
+        File('${dir.path}/tuned').writeAsStringSync(''); // nothing at start
+      },
+      interrupted: true,
+    );
+    List<Map> calls(String method) =>
+        requests(dir).where((q) => q['method'] == method).toList();
+    for (var i = 0; i < 20; i++) {
+      await settleService(tester);
+    }
+    final before = calls('models.tuning').length;
+    await tester.tap(find.text('Continue').first);
+    for (var i = 0; i < 20; i++) {
+      await settleService(tester);
+    }
+    expect(calls('jobs.continue'), hasLength(1));
+    expect(calls('models.tuning').length, greaterThan(before));
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('an open terminal keeps the keyboard and the app its keys', (
+    tester,
+  ) async {
+    await mountApp(tester);
+    bool inTerminal() =>
+        FocusManager.instance.primaryFocus?.context
+            ?.findAncestorWidgetOfExactType<TerminalView>() !=
+        null;
+    final start = find.byKey(const ValueKey('start-agent-test'));
+    tester.widget<IconButton>(start).onPressed!();
+    await settleService(tester);
+    expect(find.byType(TerminalView), findsOneWidget);
+    expect(inTerminal(), isTrue);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.comma);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await settleService(tester);
+    expect(find.byType(SettingsView), findsNothing);
+    expect(find.byType(TerminalView), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('terminal-back')));
+    await settleService(tester);
+    tester.widget<IconButton>(start).onPressed!();
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('terminal-tab-0')));
+    await settleService(tester);
+    expect(inTerminal(), isTrue);
+
+    await tester.tap(find.byKey(const ValueKey('terminal-screenshot')));
+    await settleService(tester);
+    await tester.tap(find.text('Done'));
+    await settleService(tester);
+    expect(inTerminal(), isTrue);
+    await unmountApp(tester);
+  });
+
+  testWidgets('F12 saves the picture, then asks for its note', (tester) async {
+    final dir = await mountApp(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f12);
+    await settleService(tester);
+    await tester.enterText(
+      find.byKey(const ValueKey('screenshot-note')),
+      'The header is cut off',
+    );
+    await tester.tap(find.text('Done'));
+    await settleService(tester);
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    final files = Directory('${dir.path}/shots').listSync().map((f) => f.path);
+    expect(files.where((f) => f.endsWith('.png')), hasLength(1));
+    expect(
+      File(files.singleWhere((f) => f.endsWith('.txt'))).readAsStringSync(),
+      'The header is cut off\n',
+    );
+    await unmountApp(tester);
+  });
+
+  testWidgets('F12 with a modifier takes nothing; Esc keeps the note', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f12);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await settleService(tester);
+    expect(find.byKey(const ValueKey('screenshot-note')), findsNothing);
+    expect(Directory('${dir.path}/shots').existsSync(), isFalse);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f12);
+    await settleService(tester);
+    // F12 again while the note is asked for: no second picture, no second dialog.
+    await tester.sendKeyEvent(LogicalKeyboardKey.f12);
+    await settleService(tester);
+    expect(find.byKey(const ValueKey('screenshot-note')), findsOneWidget);
+    await tester.enterText(
+      find.byKey(const ValueKey('screenshot-note')),
+      'Kept on Esc',
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await settleService(tester);
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 50)),
+    );
+    expect(find.byKey(const ValueKey('screenshot-note')), findsNothing);
+    final files = Directory('${dir.path}/shots').listSync().map((f) => f.path);
+    expect(files.where((f) => f.endsWith('.png')), hasLength(1));
+    expect(
+      File(files.singleWhere((f) => f.endsWith('.txt'))).readAsStringSync(),
+      'Kept on Esc\n',
+    );
+    await unmountApp(tester);
+  });
+
+  testWidgets('What we found stays until a preview is applied', (tester) async {
+    final dir = await mountApp(
+      tester,
+      beforeStart: (dir) =>
+          File('${dir.path}/found_on_pc').writeAsStringSync(''),
+    );
+    await tester.tap(find.byKey(const ValueKey('help-open')));
+    await settleService(tester);
+    await tester.tap(find.text('Find existing AI').first);
+    await settleService(tester);
+    final reuse = find.byKey(const ValueKey('found-reuse-found:/data/models'));
+    await tester.tap(reuse);
+    await settleService(tester);
+    await tester.tap(find.text('Cancel').last);
+    await settleService(tester);
+    expect(reuse, findsOneWidget);
+    await tester.tap(reuse);
+    await settleService(tester);
+    await tester.tap(find.text('Apply'));
+    await settleService(tester);
+    expect(reuse, findsNothing);
+    expect(
+      requests(dir).lastWhere((q) => q['method'] == 'existing.apply')['params'],
+      containsPair('plan', 'opaque-existing'),
+    );
+    await settleService(tester);
+    await unmountApp(tester);
+  });
+
+  testWidgets(
+    'search/files do no inventory refresh; idle surfaces keep updates',
+    (tester) async {
+      final dir = await mountApp(tester);
+      final baseline = forcedScans(dir);
+      await openFromHelp(tester, 'Providers and models');
+      expect(forcedScans(dir), baseline);
+      expect(find.text('Providers and models'), findsOneWidget);
+      expect(find.widgetWithText(TextButton, 'Back'), findsOneWidget);
+      await tester.tap(find.text('Models (1)'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Load'));
+      await settleService(tester);
+      // The page keeps its data; leaving it brings the map up to date.
+      expect(forcedScans(dir), baseline);
+      expect(find.text('Succeeded'), findsOneWidget);
+      expect(
+        tester
+            .widget<IconButton>(find.widgetWithIcon(IconButton, Icons.refresh))
+            .onPressed,
+        isNull,
+        reason: 'the result window is modal',
+      );
+      final liveBefore = requests(
+        dir,
+      ).where((q) => q['method'] == 'map.snapshot').length;
+      await tester.pump(const Duration(seconds: 8));
+      await settleService(tester);
+      expect(
+        requests(dir).where((q) => q['method'] == 'map.snapshot').length,
+        greaterThan(liveBefore),
+      );
+      await tester.tap(find.byKey(const ValueKey('task-back')).last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Download model'));
+      await tester.pumpAndSettle();
+      final beforeSearch = snapshots(dir);
+      final beforeSearchScans = forcedScans(dir);
+      await tester.enterText(find.byType(TextField), 'chat');
+      await tester.tap(find.byTooltip('Search'));
+      await settleService(tester);
+      expect(find.text('owner/repo'), findsOneWidget);
+      await tester.tap(find.text('owner/repo'));
+      await settleService(tester);
+      expect(find.text('model.gguf'), findsOneWidget);
+      expect(snapshots(dir), beforeSearch);
+      expect(forcedScans(dir), beforeSearchScans);
+      final browserLive = requests(
+        dir,
+      ).where((q) => q['method'] == 'map.snapshot').length;
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(seconds: 7)),
+      );
+      await tester.pump(const Duration(seconds: 8));
+      await settleService(tester);
+      expect(
+        requests(dir).where((q) => q['method'] == 'map.snapshot').length,
+        greaterThan(browserLive),
+      );
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'connection search survives review and apply; first result includes Undo',
+    (tester) async {
+      final dir = await mountApp(tester);
+      await openFromHelp(tester, 'Connections');
+      final field = find.byType(TextField);
+      await tester.enterText(field, 'Known');
+      await tester.tap(find.text('Known server'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(SwitchListTile, 'Test agent'));
+      await settleService(tester);
+      expect(find.byType(OverlayWindow), findsOneWidget);
+      expect(find.byType(ConnectionsView), findsOneWidget);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(OverlayWindow),
+          matching: find.text('Cancel'),
+        ),
+      );
+      await settleService(tester);
+      expect(find.byType(OverlayWindow), findsNothing);
+      expect(
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        'Known',
+      );
+      final scans = forcedScans(dir);
+      await tester.tap(find.widgetWithText(SwitchListTile, 'Test agent'));
+      await settleService(tester);
+      await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+      await settleService(tester);
+      expect(find.text('Succeeded'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(OverlayWindow),
+          matching: find.widgetWithText(TextButton, 'Undo'),
+        ),
+        findsOneWidget,
+      );
+      expect(forcedScans(dir), scans + 1);
+      await tester.tap(find.byKey(const ValueKey('task-back')).last);
+      await tester.pumpAndSettle();
+      expect(
+        tester.widget<EditableText>(find.byType(EditableText)).controller.text,
+        'Known',
+      );
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+  testWidgets(
+    'welcome exclusions survive catalog progress and a cancelled review',
+    (tester) async {
+      final dir = await mountApp(tester, welcome: true);
+      expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isTrue);
+      await tester.tap(find.byType(Checkbox));
+      await tester.pump();
+      final catalog = find.widgetWithText(
+        TextButton,
+        'Look for add-ons online',
+      );
+      await tester.ensureVisible(catalog);
+      await tester.tap(catalog);
+      await settleService(tester);
+      expect(tester.widget<Checkbox>(find.byType(Checkbox)).value, isFalse);
+      expect(
+        requests(dir).where((q) => q['method'] == 'addons.catalog').length,
+        1,
+      );
+      await tester.ensureVisible(find.text('Catalog adapter · 2.0'));
+      await tester.tap(find.text('Catalog adapter · 2.0'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Get add-on'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Get add-on'));
+      await settleService(tester);
+      expect(find.byType(OverlayWindow), findsOneWidget);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(OverlayWindow),
+          matching: find.text('Cancel'),
+        ),
+      );
+      await settleService(tester);
+      final focus = tester.widget<MapAddonsFocus>(find.byType(MapAddonsFocus));
+      expect(focus.welcome, isTrue);
+      final checkbox = find.byType(Checkbox);
+      await tester.ensureVisible(checkbox);
+      expect(tester.widget<Checkbox>(checkbox).value, isFalse);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  for (final fails in [false, true]) {
+    testWidgets(
+      'catalog reload after install (failure=$fails) retains result and updated entries',
+      (tester) async {
+        final dir = await mountApp(tester, welcome: true, installFails: fails);
+        final scans = forcedScans(dir);
+        final catalog = find.widgetWithText(
+          TextButton,
+          'Look for add-ons online',
+        );
+        await tester.ensureVisible(catalog);
+        await tester.tap(catalog);
+        await settleService(tester);
+        await tester.ensureVisible(find.text('Catalog adapter · 2.0'));
+        await tester.tap(find.text('Catalog adapter · 2.0'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('Get add-on'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Get add-on'));
+        await settleService(tester);
+        await tester.tap(find.widgetWithText(FilledButton, 'Install'));
+        await settleService(tester);
+        expect(
+          find.text(fails ? 'The action could not be completed.' : 'Succeeded'),
+          findsOneWidget,
+        );
+        expect(
+          requests(dir).where((q) => q['method'] == 'addons.catalog').length,
+          2,
+        );
+        expect(forcedScans(dir), scans);
+        final focus = tester.widget<MapAddonsFocus>(
+          find.byType(MapAddonsFocus, skipOffstage: false),
+        );
+        expect(focus.entries!.single['preview'], 'catalog-2');
+        expect(focus.entries!.single['action'], fails ? 'install' : '');
+        await tester.tap(find.byKey(const ValueKey('task-back')).last);
+        await tester.pumpAndSettle();
+        expect(
+          find.text('The catalog loads only when you ask to look online.'),
+          findsNothing,
+        );
+        expect(tester.takeException(), isNull);
+        await unmountApp(tester);
+      },
+    );
+  }
+  testWidgets(
+    'a narrow map area in a wider window does not trigger a completion scan',
+    (tester) async {
+      final dir = await mountApp(tester, areaWidth: 880);
+      final scans = forcedScans(dir);
+      await openFromHelp(tester, 'Providers and models');
+      await tester.tap(find.text('Models (1)'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Load'));
+      await settleService(tester);
+      expect(find.text('Succeeded'), findsOneWidget);
+      expect(find.byKey(const ValueKey('full-task')), findsOneWidget);
+      expect(forcedScans(dir), scans);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'new MCP form requests a private preview and Cancel performs no apply',
+    (tester) async {
+      final dir = await mountApp(tester);
+      await openFromHelp(tester, 'Connections');
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Add MCP server'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('mcp-name')),
+        'new-server',
+      );
+      await tester.enterText(
+        find.byKey(const ValueKey('mcp-command')),
+        '/test/program',
+      );
+      final recipient = find.widgetWithText(CheckboxListTile, 'Test agent');
+      await tester.ensureVisible(recipient);
+      await tester.pumpAndSettle();
+      await tester.tap(recipient);
+      final preview = find.widgetWithText(FilledButton, 'Preview');
+      await tester.ensureVisible(preview);
+      await tester.pumpAndSettle();
+      await tester.tap(preview);
+      await settleService(tester);
+      final calls = requests(dir);
+      expect(
+        calls.singleWhere(
+          (q) => q['method'] == 'connections.author_preview',
+        )['params']['name'],
+        'new-server',
+      );
+      expect(find.text('Agents: Test agent'), findsOneWidget);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(OverlayWindow),
+          matching: find.text('Cancel'),
+        ),
+      );
+      await settleService(tester);
+      expect(
+        requests(dir).where((q) => q['method'] == 'connections.apply'),
+        isEmpty,
+      );
+      final name = find.byKey(const ValueKey('mcp-name'));
+      await tester.ensureVisible(name);
+      await tester.pumpAndSettle();
+      expect(tester.widget<TextFormField>(name).controller!.text, 'new-server');
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+  testWidgets(
+    'a simple drawn line asks in a small dialog; Cancel has no apply, Apply shows a note with Undo',
+    (tester) async {
+      final dir = await mountApp(tester);
+      Future<void> draw() async {
+        final from = tester.getCenter(find.text('Test agent'));
+        final to = tester.getCenter(find.text('Known server'));
+        await tester.dragFrom(from, to - from);
+        await settleService(tester);
+      }
+
+      await draw();
+      final dialog = find.byKey(const ValueKey('map-change-dialog'));
+      expect(dialog, findsOneWidget);
+      expect(find.byType(ConnectionReview), findsNothing);
+      expect(
+        find.descendant(
+          of: dialog,
+          matching: find.text('Test agent → Known server'),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.descendant(of: dialog, matching: find.text('Cancel')),
+      );
+      await settleService(tester);
+      expect(
+        requests(dir).where((q) => q['method'] == 'connections.apply'),
+        isEmpty,
+      );
+      await draw();
+      await tester.tap(
+        find.descendant(of: dialog, matching: find.text('Apply')),
+      );
+      await settleService(tester);
+      expect(dialog, findsNothing);
+      expect(find.text('Succeeded'), findsOneWidget);
+      final undo = find.widgetWithText(SnackBarAction, 'Undo');
+      expect(undo, findsOneWidget);
+      await tester.tap(undo);
+      await settleService(tester);
+      expect(
+        requests(dir).where((q) => q['method'] == 'connections.undo').length,
+        1,
+      );
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+  testWidgets(
+    'disconnecting a provider the agent sets itself does not sign it out',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (dir) => File('${dir.path}/foreign_cloud').createSync(),
+      );
+      await settleService(tester);
+      await tester.tap(find.text('Test agent'));
+      await tester.pumpAndSettle();
+      await tester.drag(
+        find.byTooltip(
+          'Move this connection to another compatible box, or to empty space to disconnect.',
+        ),
+        const Offset(0, 240),
+      );
+      await settleService(tester);
+      expect(
+        find.text(
+          'Test agent uses Anthropic through its own settings. Change it there.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        requests(dir).where(
+          (q) =>
+              q['method'] == 'agents.action_preview' &&
+              (q['params'] as Map)['action'] == 'logout',
+        ),
+        isEmpty,
+      );
+      await unmountApp(tester);
+    },
+  );
+  testWidgets('hook to empty opens removal review; Cancel leaves the connection', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    final from = tester.getCenter(find.text('Test agent')),
+        to = tester.getCenter(find.text('Known server'));
+    await tester.dragFrom(from, to - from);
+    await settleService(tester);
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('map-change-dialog')),
+        matching: find.text('Apply'),
+      ),
+    );
+    await settleService(tester);
+    await tester.tap(find.text('Test agent'));
+    await tester.pumpAndSettle();
+    await tester.drag(
+      find.byTooltip(
+        'Move this connection to another compatible box, or to empty space to disconnect.',
+      ),
+      const Offset(0, 240),
+    );
+    await settleService(tester);
+    final dialog = find.byKey(const ValueKey('disconnect-dialog'));
+    expect(dialog, findsOneWidget);
+    expect(find.byType(ConnectionReview), findsNothing);
+    final move = requests(
+      dir,
+    ).singleWhere((q) => q['method'] == 'connections.move_preview');
+    expect(move['params'], {
+      'agent': 'agent:test',
+      'old': 'mcp:known-server',
+      'new': null,
+    });
+    await tester.tap(
+      find.descendant(of: dialog, matching: find.text('Cancel')),
+    );
+    await settleService(tester);
+    expect(
+      requests(dir).where((q) => q['method'] == 'connections.apply').length,
+      1,
+    );
+    await tester.drag(
+      find.byTooltip(
+        'Move this connection to another compatible box, or to empty space to disconnect.',
+      ),
+      const Offset(0, 240),
+    );
+    await settleService(tester);
+    File('${dir.path}/no-slots').writeAsStringSync('');
+    await tester.tap(find.descendant(of: dialog, matching: find.text('Apply')));
+    await settleService(tester);
+    expect(
+      requests(dir).where((q) => q['method'] == 'connections.apply').length,
+      2,
+    );
+    expect(find.text('Succeeded'), findsOneWidget);
+    expect(find.widgetWithText(SnackBarAction, 'Undo'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+  testWidgets(
+    'provider to model is one short step; an agent connected later gets the model',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (d) => File('${d.path}/serves').writeAsStringSync(''),
+      );
+      Future<void> draw(String from, String to) async {
+        final a = tester.getCenter(find.text(from)),
+            b = tester.getCenter(find.text(to));
+        await tester.dragFrom(a, b - a);
+        await settleService(tester);
+      }
+
+      List<Map<String, dynamic>> calls(String method) => [
+        for (final q in requests(dir))
+          if (q['method'] == method) q['params'] as Map<String, dynamic>,
+      ];
+      await draw('Fixture provider', 'example-model');
+      // The core previews it with its rules first (models.choose_preview).
+      expect(calls('models.choose_preview').single, {
+        'model': 'model:runtime:fixture:example-model',
+        'provider': 'runtime:fixture',
+      });
+      final dialog = find.byKey(const ValueKey('map-change-dialog'));
+      expect(dialog, findsOneWidget);
+      expect(
+        find.descendant(
+          of: dialog,
+          matching: find.text('Fixture provider → example-model'),
+        ),
+        findsOneWidget,
+      );
+      // No list of agents to choose from.
+      expect(find.byType(CheckboxListTile), findsNothing);
+      await tester.tap(
+        find.descendant(of: dialog, matching: find.text('Apply')),
+      );
+      await settleService(tester);
+      expect(calls('models.choose_apply'), hasLength(1));
+      // Never around the rules through the settings.
+      expect(
+        calls(
+          'settings.update',
+        ).where((v) => (v['values'] as Map).containsKey('provider_models')),
+        isEmpty,
+      );
+      expect(
+        requests(dir).where((q) => q['method'] == 'models.attach_preview'),
+        isEmpty,
+      );
+      final undo = find.widgetWithText(SnackBarAction, 'Undo');
+      expect(undo, findsOneWidget);
+      await tester.tap(undo);
+      await settleService(tester);
+      expect(calls('models.choose_undo'), hasLength(1));
+      // Chosen again, then the agent drawn to the provider gets that model.
+      await draw('Fixture provider', 'example-model');
+      await tester.tap(
+        find.descendant(of: dialog, matching: find.text('Apply')),
+      );
+      await settleService(tester);
+      await draw('Test agent', 'Fixture provider');
+      final preview = requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'connections.preview');
+      expect(preview['params']['kind'], 'provider');
+      expect(preview['params']['model'], 'example-model');
+      expect(preview['params']['use_now'], isTrue);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+  testWidgets('a provider choice with agent users moves with them in the core', (
+    tester,
+  ) async {
+    final dir = await mountApp(
+      tester,
+      beforeStart: (d) {
+        File('${d.path}/switch').writeAsStringSync('');
+        File('${d.path}/start-settings.json').writeAsStringSync(
+          jsonEncode({
+            'provider_models': {
+              'runtime:fixture': 'model:runtime:fixture:example-model',
+            },
+          }),
+        );
+      },
+    );
+    // The provider → model line, moved from its chosen model to another.
+    await tester.tap(find.text('Fixture provider'));
+    await tester.pumpAndSettle();
+    final old = tester.getCenter(find.text('example-model'));
+    final hooks = find.byTooltip(
+      'Move this connection to another compatible box, or to empty space to disconnect.',
+    );
+    final hook =
+        (hooks.evaluate().toList()..sort(
+              (x, y) => (tester.getCenter(find.byWidget(x.widget)) - old)
+                  .distance
+                  .compareTo(
+                    (tester.getCenter(find.byWidget(y.widget)) - old).distance,
+                  ),
+            ))
+            .first;
+    final from = tester.getCenter(find.byWidget(hook.widget)),
+        to = tester.getCenter(find.text('other-model'));
+    await tester.dragFrom(from, to - from);
+    await settleService(tester);
+    final switched = requests(
+      dir,
+    ).where((q) => q['method'] == 'models.switch_preview').toList();
+    expect(switched, hasLength(1), reason: 'drawn as a switch');
+    final dialog = find.byKey(const ValueKey('map-change-dialog'));
+    if (dialog.evaluate().isNotEmpty) {
+      await tester.tap(
+        find.descendant(of: dialog, matching: find.text('Apply')),
+      );
+      await settleService(tester);
+    }
+    expect(
+      requests(dir).where((q) => q['method'] == 'connections.apply'),
+      hasLength(1),
+    );
+    // The models the local LLM keeps loaded are offered afterwards: not now.
+    await tester.tap(find.text('Cancel').last);
+    await settleService(tester);
+    // Not beside the connection's backup through the settings.
+    expect(
+      requests(dir).where(
+        (q) =>
+            q['method'] == 'settings.update' &&
+            ((q['params'] as Map)['values'] as Map).containsKey(
+              'provider_models',
+            ),
+      ),
+      isEmpty,
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+  testWidgets(
+    'a provider choice that could not follow its agents is said, and on Undo',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (d) {
+          File('${d.path}/switch').writeAsStringSync('');
+          File('${d.path}/choice_fails').writeAsStringSync('');
+          File('${d.path}/start-settings.json').writeAsStringSync(
+            jsonEncode({
+              'provider_models': {
+                'runtime:fixture': 'model:runtime:fixture:example-model',
+              },
+            }),
+          );
+        },
+      );
+      await tester.tap(find.text('Fixture provider'));
+      await tester.pumpAndSettle();
+      final old = tester.getCenter(find.text('example-model'));
+      final hooks = find.byTooltip(
+        'Move this connection to another compatible box, or to empty space to disconnect.',
+      );
+      final hook =
+          (hooks.evaluate().toList()..sort(
+                (x, y) => (tester.getCenter(find.byWidget(x.widget)) - old)
+                    .distance
+                    .compareTo(
+                      (tester.getCenter(find.byWidget(y.widget)) - old)
+                          .distance,
+                    ),
+              ))
+              .first;
+      final from = tester.getCenter(find.byWidget(hook.widget)),
+          to = tester.getCenter(find.text('other-model'));
+      await tester.dragFrom(from, to - from);
+      await settleService(tester);
+      final dialog = find.byKey(const ValueKey('map-change-dialog'));
+      if (dialog.evaluate().isNotEmpty) {
+        await tester.tap(
+          find.descendant(of: dialog, matching: find.text('Apply')),
+        );
+        await settleService(tester);
+      }
+      // The models the local LLM keeps loaded are offered afterwards: not now.
+      await tester.tap(find.text('Cancel').last);
+      await settleService(tester);
+      // Applied with its Undo, but the provider's own model stayed.
+      expect(
+        find.text(
+          "Applied, but the local LLM's own model stayed as it was: it changed meanwhile or could not be saved.",
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Succeeded'), findsNothing);
+      await tester.tap(find.widgetWithText(SnackBarAction, 'Undo'));
+      await settleService(tester);
+      expect(
+        find.textContaining(
+          "The local LLM's own model was not put back: a file or the model changed since.",
+        ),
+        findsOneWidget,
+      );
+      expect(
+        requests(dir).where((q) => q['method'] == 'connections.undo'),
+        hasLength(1),
+      );
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+  testWidgets('a stale provider choice is not sent to an agent', (
+    tester,
+  ) async {
+    final dir = await mountApp(
+      tester,
+      beforeStart: (d) {
+        File('${d.path}/serves').writeAsStringSync('');
+        File('${d.path}/start-settings.json').writeAsStringSync(
+          jsonEncode({
+            'provider_models': {'runtime:fixture': 'mcp:known-server'},
+          }),
+        );
+      },
+    );
+    final a = tester.getCenter(find.text('Test agent')),
+        b = tester.getCenter(find.text('Fixture provider'));
+    await tester.dragFrom(a, b - a);
+    await settleService(tester);
+    final preview = requests(
+      dir,
+    ).lastWhere((q) => q['method'] == 'connections.preview');
+    expect(preview['params']['model'], '');
+    expect(preview['params']['use_now'], isFalse);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+  for (final pending in [false, true]) {
+    testWidgets(
+      'live scans retain equal snapshots and map widgets (pending=$pending)',
+      (tester) async {
+        final dir = await mountApp(tester);
+        if (pending) File('${dir.path}/pending').writeAsStringSync('pending');
+        final before = requests(
+          dir,
+        ).where((q) => q['method'] == 'map.snapshot').length;
+        final original = tester.widget<AgentMap>(
+          find.byKey(const ValueKey('ai-map')),
+        );
+        await tester.pump(const Duration(seconds: 8));
+        await settleService(tester);
+        final current = tester.widget<AgentMap>(
+          find.byKey(const ValueKey('ai-map')),
+        );
+        if (!pending) expect(identical(original, current), true);
+        expect(
+          requests(dir).where((q) => q['method'] == 'map.snapshot').length,
+          greaterThan(before),
+        );
+        if (pending) {
+          expect(current.graph['pending'], true);
+          final polls = requests(
+            dir,
+          ).where((q) => q['method'] == 'map.snapshot').length;
+          await tester.pump(const Duration(seconds: 4));
+          await settleService(tester);
+          expect(
+            requests(dir).where((q) => q['method'] == 'map.snapshot').length,
+            greaterThan(polls),
+          );
+          expect(
+            identical(
+              tester.widget<AgentMap>(find.byKey(const ValueKey('ai-map'))),
+              current,
+            ),
+            true,
+          );
+        }
+        expect(tester.takeException(), isNull);
+        await unmountApp(tester);
+      },
+    );
+  }
+  testWidgets('theme and frame-rate settings apply through the service', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await tester.tap(find.byTooltip('Settings'));
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('settings-section-appearance')));
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('theme-dark')));
+    await settleService(tester);
+    expect(
+      tester.widget<MaterialApp>(find.byType(MaterialApp)).themeMode,
+      ThemeMode.dark,
+    );
+    expect(
+      Theme.of(tester.element(find.byType(SettingsView))).brightness,
+      Brightness.dark,
+    );
+    final rate = find.byKey(const ValueKey('map-light-fps-20'));
+    await tester.ensureVisible(rate);
+    await tester.pumpAndSettle();
+    await tester.tap(rate);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('60 fps').last);
+    await settleService(tester);
+    expect(
+      requests(dir)
+          .where((q) => q['method'] == 'settings.update')
+          .any((q) => q['params']['values']['map_light_fps'] == 60),
+      isTrue,
+    );
+    tester.widget<SettingsView>(find.byType(SettingsView)).onBack();
+    await settleService(tester);
+    expect(
+      tester.widget<AgentMap>(find.byKey(const ValueKey('ai-map'))).lightFps,
+      60,
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('a tuning setting goes through the preview', (tester) async {
+    final dir = await mountApp(tester);
+    await openFromHelp(tester, 'Providers and models');
+    await tester.tap(find.byKey(const ValueKey('performance-fixture')));
+    await settleService(tester);
+    expect(find.text('A mode'), findsOneWidget);
+    await tester.tap(find.text('—'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('b').last);
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'models.tuning_preview')['params'],
+      {'key': 'fixture', 'section': '*', 'setting': 'mode', 'value': 'b'},
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'connections.apply')['params'],
+      {'plan': 'opaque-tune'},
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('Measure and tune says why when the card is in use', (
+    tester,
+  ) async {
+    final dir = await mountApp(
+      tester,
+      beforeStart: (dir) {
+        File('${dir.path}/llama').writeAsStringSync('');
+        File('${dir.path}/tuned').writeAsStringSync('');
+        File('${dir.path}/card_busy').writeAsStringSync('');
+      },
+    );
+    await openFromHelp(tester, 'Providers and models');
+    await tester.tap(find.byKey(const ValueKey('performance-llamacpp')));
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('tune-all')));
+    await settleService(tester);
+    final refused = find.byKey(const ValueKey('tune-refused'));
+    expect(refused, findsOneWidget);
+    expect(
+      find.descendant(
+        of: refused,
+        matching: find.textContaining('a model is loaded in llama.cpp'),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      requests(dir).where((q) => q['method'] == 'connections.apply'),
+      isEmpty,
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('Measure and tune shows the measurement, then the preview', (
+    tester,
+  ) async {
+    final dir = await mountApp(
+      tester,
+      beforeStart: (dir) {
+        File('${dir.path}/llama').writeAsStringSync('');
+        File('${dir.path}/tuned').writeAsStringSync(''); // nothing untuned
+      },
+    );
+    await openFromHelp(tester, 'Providers and models');
+    await tester.tap(find.byKey(const ValueKey('performance-llamacpp')));
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('tune-all')));
+    await settleService(tester);
+    expect(
+      requests(dir).lastWhere((q) => q['method'] == 'models.tune')['params'],
+      {'key': 'llamacpp', 'models': null},
+    );
+    expect(
+      find.textContaining(
+        'Big: context 128k · 8500 tokens/s prompt · 235 tokens/s answer',
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'connections.apply')['params'],
+      {'plan': 'opaque-measure'},
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('tips from an agent are asked and one is applied', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await openFromHelp(tester, 'Providers and models');
+    await tester.tap(find.byKey(const ValueKey('performance-fixture')));
+    await settleService(tester);
+    final ask = find.byKey(const ValueKey('tuning-ask'));
+    await tester.ensureVisible(ask);
+    await tester.pumpAndSettle();
+    await tester.tap(ask);
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'models.tuning_ask')['params'],
+      {'key': 'fixture', 'command': 'test'},
+    );
+    expect(find.text('One thing.'), findsOneWidget);
+    final apply = find.widgetWithText(TextButton, 'Apply');
+    await tester.ensureVisible(apply);
+    await tester.pumpAndSettle();
+    await tester.tap(apply);
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'models.tuning_preview')['params'],
+      {'key': 'fixture', 'section': '*', 'setting': 'mode', 'value': 'b'},
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('the header shows open problems; one opens the agent', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await settleService(tester);
+    expect(
+      requests(dir).where((q) => q['method'] == 'health.report'),
+      isNotEmpty,
+    );
+    await tester.tap(find.byKey(const ValueKey('problems-open')));
+    await settleService(tester);
+    expect(find.text('Test agent: Not signed in'), findsOneWidget);
+    expect(
+      find.text('Test agent 1.1 is available (you have 1.0)'),
+      findsOneWidget,
+    );
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Update'));
+    await settleService(tester);
+    // The agent runs now: nothing starts before the user agrees.
+    expect(find.text('Test agent is running right now.'), findsOneWidget);
+    expect(
+      requests(dir).lastWhere((q) => q['method'] == 'updates.run')['params'],
+      {'key': 'test'},
+    );
+    await tester.tap(find.byKey(const ValueKey('update-anyway')));
+    await settleService(tester);
+    expect(
+      requests(dir).lastWhere((q) => q['method'] == 'updates.run')['params'],
+      {'key': 'test', 'running_ok': true},
+    );
+    // Update closed the window; the problem is still there to open.
+    await tester.tap(find.byKey(const ValueKey('problems-open')));
+    await settleService(tester);
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('smart-card')),
+        matching: find.widgetWithText(OutlinedButton, 'Details'),
+      ),
+    );
+    await settleService(tester);
+    expect(
+      requests(dir).lastWhere((q) => q['method'] == 'agents.health')['params'],
+      {'command': 'test'},
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('the details of an agent show its health', (tester) async {
+    final dir = await mountApp(tester);
+    tester
+        .widget<AgentMap>(find.byKey(const ValueKey('ai-map')))
+        .onAgent('test');
+    await settleService(tester);
+    expect(
+      requests(dir).lastWhere((q) => q['method'] == 'agents.health')['params'],
+      {'command': 'test'},
+    );
+    expect(find.text('Needs a look'), findsOneWidget);
+    expect(find.text('Select it on the map.'), findsOneWidget);
+    // Omarchy's usage record was stale: asked for, then the details again.
+    final asked = requests(
+      dir,
+    ).indexWhere((q) => q['method'] == 'agents.usage_refresh');
+    expect(asked, greaterThanOrEqualTo(0));
+    expect(
+      requests(dir).skip(asked).where((q) => q['method'] == 'agents.details'),
+      isNotEmpty,
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('F1 opens Help: the manual, and a start that closes it', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f1);
+    await settleService(tester);
+    expect(find.text('Open user manual'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('help-manual')));
+    await settleService(tester);
+    expect(
+      requests(dir).where((q) => q['method'] == 'help.open_manual'),
+      hasLength(1),
+    );
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Your first agent'));
+    await settleService(tester);
+    expect(find.text('Open user manual'), findsNothing);
+    expect(
+      requests(dir).where((q) => q['method'] == 'guide.snapshot'),
+      isNotEmpty,
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('an interrupted download is listed at start and continued', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester, interrupted: true);
+    await settleService(tester);
+    expect(find.text('m.gguf · Fixture provider'), findsOneWidget);
+    expect(
+      find.text(
+        'Interrupted at {0} · Continue goes on where it stopped'.replaceAll(
+          '{0}',
+          '40 %',
+        ),
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Continue'));
+    await settleService(tester);
+    expect(
+      requests(dir).lastWhere((q) => q['method'] == 'jobs.continue')['params'],
+      {'id': 'aaaaaaaaaaaa'},
+    );
+    expect(
+      requests(dir).where(
+        (q) => q['method'] == 'tasks.status' && q['params']['task'] == 'cont',
+      ),
+      isNotEmpty,
+    );
+    expect(find.byKey(const ValueKey('job-aaaaaaaaaaaa')), findsNothing);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('a skill from the web goes through the preview', (tester) async {
+    final dir = await mountApp(tester);
+    await openFromHelp(tester, 'Connections');
+    await tester.tap(find.byKey(const ValueKey('skills-web-open')));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byKey(const ValueKey('skills-web-search')),
+      'pdf',
+    );
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('skill-a/skills/pdf')));
+    await settleService(tester);
+    final preview = find.widgetWithText(FilledButton, 'Preview');
+    await tester.ensureVisible(preview);
+    await tester.pumpAndSettle();
+    await tester.tap(preview);
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'skills.web_preview')['params'],
+      {'fetched': 'f1', 'folder': '~/.agents/skills', 'agents': []},
+    );
+    expect(find.text('~/.agents/skills/pdf/SKILL.md'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'connections.apply')['params'],
+      {'plan': 'opaque-skill'},
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('a set-up MCP server is asked for its tools', (tester) async {
+    final dir = await mountApp(tester);
+    await openFromHelp(tester, 'Connections');
+    final card = find.text('Known server');
+    await tester.ensureVisible(card);
+    await tester.pumpAndSettle();
+    await tester.tap(card);
+    await settleService(tester);
+    expect(find.textContaining('Not asked yet.'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('mcp-ask-known-server')));
+    await settleService(tester);
+    expect(
+      requests(dir).lastWhere((q) => q['method'] == 'mcp.tools')['params'],
+      {'name': 'known-server'},
+    );
+    expect(find.text('lookup'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('a recommended MCP server goes through the preview', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await openFromHelp(tester, 'Connections');
+    await tester.tap(find.byKey(const ValueKey('mcp-catalog-open')));
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('mcp-pick-time')));
+    await tester.pumpAndSettle();
+    final preview = find.widgetWithText(FilledButton, 'Preview');
+    await tester.ensureVisible(preview);
+    await tester.pumpAndSettle();
+    await tester.tap(preview);
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'mcp.option_preview')['params'],
+      {
+        'option': 'opt-time',
+        'name': 'time',
+        'values': {},
+        'agents': ['test'],
+      },
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'connections.apply')['params'],
+      {'plan': 'opaque-catalog'},
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('after a provider change the models kept loaded follow', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await openFromHelp(tester, 'Connections');
+    unawaited(
+      tester.widget<ConnectionsView>(find.byType(ConnectionsView)).onPreview({
+        'kind': 'provider',
+        'command': 'test',
+        'item': 'fixture',
+        'remove': false,
+      }),
+    );
+    await settleService(tester);
+    await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+    await settleService(tester);
+    // The second preview: the models kept loaded, with its warning.
+    expect(
+      requests(dir).where((q) => q['method'] == 'models.slots_preview'),
+      isNotEmpty,
+    );
+    expect(
+      find.text('Fixture provider keeps 2 models loaded at once'),
+      findsOneWidget,
+    );
+    expect(find.text('Too big together.'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'connections.apply')['params'],
+      {'plan': 'opaque-slots'},
+    );
+    expect(
+      requests(dir).where((q) => q['method'] == 'models.slots_reload'),
+      hasLength(1),
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('a security setting is lowered through the preview', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    tester
+        .widget<AgentMap>(find.byKey(const ValueKey('ai-map')))
+        .onAgent('test');
+    await settleService(tester);
+    await tester.tap(find.text('Security settings'));
+    await settleService(tester);
+    expect(find.text('High risk'), findsOneWidget);
+    await tester.ensureVisible(find.text('Lower it…'));
+    await tester.tap(find.text('Lower it…'));
+    await settleService(tester);
+    final preview = requests(
+      dir,
+    ).lastWhere((q) => q['method'] == 'agents.security_preview');
+    expect(preview['params'], {
+      'command': 'test',
+      'key': 'ask',
+      'value': 'always',
+    });
+    await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'connections.apply')['params'],
+      {'plan': 'opaque-security'},
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('steps taken from the guide return to it, refreshed', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    int guides() =>
+        requests(dir).where((q) => q['method'] == 'guide.snapshot').length;
+    await openFromHelp(tester, 'Your first agent');
+    expect(guides(), 1);
+    // Install the route's local LLM: reviewed, installed, the guide again.
+    await tester.tap(find.text('Install llama.cpp…'));
+    await settleService(tester);
+    expect(find.textContaining('b9000-vulkan'), findsWidgets);
+    await tester.ensureVisible(find.text('Start at login'));
+    await tester.tap(find.text('Start at login'));
+    await tester.pump();
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Install'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Install'));
+    await settleService(tester);
+    final install = requests(
+      dir,
+    ).lastWhere((q) => q['method'] == 'installers.install');
+    expect(install['params'], {
+      'installer': 'inst-1',
+      'start_now': false,
+      'start_at_login': true,
+    });
+    expect(guides(), 2);
+    // Providers from the guide: Back comes back to the guide, refreshed.
+    await tester.tap(find.text('Providers and models').first);
+    await settleService(tester);
+    await tester.tap(find.text('Back').first);
+    await settleService(tester);
+    expect(guides(), 3);
+    expect(find.text('Local route'), findsWidgets);
+    // Chosen from Help, Providers goes back to the map, not the guide.
+    await openFromHelp(tester, 'Providers and models');
+    await tester.tap(find.text('Back').first);
+    await settleService(tester);
+    expect(guides(), 3);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('add-on suggestions and updates in Open problems', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await settleService(tester);
+    expect(
+      requests(dir).where((q) => q['method'] == 'addons.catalog'),
+      isNotEmpty,
+    ); // read quietly at start, for the hints
+    await tester.tap(find.byKey(const ValueKey('problems-open')));
+    await settleService(tester);
+    expect(find.text('Goose is on this PC but not on the map'), findsOneWidget);
+    expect(find.text('Add-on updates ready: Catalog adapter'), findsOneWidget);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Update all'));
+    await settleService(tester);
+    expect(find.text('2.0 → 2.1'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('addons-update-all')));
+    await settleService(tester);
+    expect(
+      requests(dir).lastWhere((q) => q['method'] == 'addons.install')['params'],
+      {'preview': 'catalog-1'},
+    );
+    await settleService(tester);
+    expect(find.text('Add-ons updated: Catalog adapter'), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('problems-open')));
+    await settleService(tester);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Get add-ons'));
+    await settleService(tester);
+    expect(find.byType(MapAddonsFocus), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('the app window meets the accessibility guidelines', (
+    tester,
+  ) async {
+    final semantics = tester.ensureSemantics();
+    await mountApp(tester);
+    await settleService(tester);
+    Future<void> check({bool overlay = false}) async {
+      await expectLater(tester, meetsGuideline(labeledTapTargetGuideline));
+      // Each text measured on its own. The header's AI Map is left out: the
+      // guideline reads 2.34 whatever its colour, so it samples it wrongly.
+      await expectLater(
+        tester,
+        meetsGuideline(
+          CustomMinimumContrastGuideline(
+            finder: () {
+              final texts = find.byWidgetPredicate(
+                (w) =>
+                    w is Text &&
+                    (w.data ?? 'rich').trim().isNotEmpty &&
+                    w.data != 'AI Map',
+              );
+              // What the barrier dims behind the window is not to be read.
+              return overlay
+                  ? find.descendant(
+                      of: find.byType(OverlayWindow),
+                      matching: texts,
+                    )
+                  : texts;
+            }(),
+          ),
+        ),
+      );
+      await expectLater(tester, meetsGuideline(desktopTapTargets));
+    }
+
+    await check(); // the header and the map
+    await tester.tap(find.byKey(const ValueKey('problems-open')));
+    await settleService(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape); // the status window
+    await settleService(tester);
+    await tester.tap(find.byTooltip('Settings').first);
+    await settleService(tester);
+    await check(); // Settings
+    await tester.tap(find.byKey(const ValueKey('help-open')));
+    await settleService(tester);
+    await check(overlay: true); // Help
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape); // Esc closes it
+    await settleService(tester);
+    expect(find.byKey(const ValueKey('help-manual')), findsNothing);
+    expect(tester.takeException(), isNull);
+    semantics.dispose();
+    await unmountApp(tester);
+  });
+
+  testWidgets('keyboard shortcuts: Ctrl+, F5, zoom, Esc and Backspace', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await settleService(tester);
+    final settings = find.byType(SettingsView);
+    Future<void> keys(LogicalKeyboardKey key, {bool control = false}) async {
+      if (control) await tester.sendKeyDownEvent(LogicalKeyboardKey.control);
+      await tester.sendKeyEvent(key);
+      if (control) await tester.sendKeyUpEvent(LogicalKeyboardKey.control);
+      await settleService(tester);
+    }
+
+    await keys(LogicalKeyboardKey.comma, control: true);
+    expect(settings, findsOneWidget);
+    await keys(LogicalKeyboardKey.backspace);
+    expect(settings, findsNothing);
+    await keys(LogicalKeyboardKey.comma, control: true);
+    expect(settings, findsOneWidget);
+    await keys(LogicalKeyboardKey.escape);
+    expect(settings, findsNothing);
+
+    final before = requests(dir).length;
+    await keys(LogicalKeyboardKey.f5);
+    expect(requests(dir).length, greaterThan(before));
+
+    double scale() => tester
+        .widget<InteractiveViewer>(find.byType(InteractiveViewer).first)
+        .transformationController!
+        .value
+        .entry(0, 0);
+    await keys(LogicalKeyboardKey.equal, control: true);
+    expect(scale(), closeTo(1.25, 1e-9));
+    await keys(LogicalKeyboardKey.minus, control: true);
+    await keys(LogicalKeyboardKey.minus, control: true);
+    expect(scale(), closeTo(0.8, 1e-9));
+    await keys(LogicalKeyboardKey.digit0, control: true);
+    expect(scale(), 1);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('recent changes in Settings: Undo after a restart', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await settleService(tester);
+    await tester.tap(find.byTooltip('Settings').first);
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('settings-section-changes')));
+    await settleService(tester);
+    final undo = find.byKey(const ValueKey('undo-20261030-100000-000000'));
+    await tester.scrollUntilVisible(
+      undo,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(undo);
+    await tester.pumpAndSettle();
+    expect(find.text('~/.claude.json'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('undo-20261029-090000-000000')),
+      findsNothing,
+    ); // changed again since: nothing to undo
+    await tester.tap(undo);
+    await settleService(tester);
+    expect(
+      requests(dir).lastWhere((q) => q['method'] == 'changes.undo')['params'],
+      {'id': '20261030-100000-000000'},
+    );
+    expect(find.text('Put back: ~/.claude.json'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('the desktop theme follows also while the app is busy', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await settleService(tester);
+    Color primary() => tester
+        .widget<MaterialApp>(find.byType(MaterialApp))
+        .theme!
+        .colorScheme
+        .primary;
+    final before = primary();
+    await tester.tap(find.byTooltip('Settings').first);
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('settings-section-changes')));
+    await settleService(tester);
+    final undo = find.byKey(const ValueKey('undo-20261030-100000-000000'));
+    await tester.scrollUntilVisible(
+      undo,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.ensureVisible(undo);
+    await tester.pumpAndSettle();
+    File('${dir.path}/slow').writeAsStringSync('');
+    await tester.tap(undo); // busy until the core answers
+    await settleService(tester);
+    File(
+      '${dir.path}/theme.json',
+    ).writeAsStringSync(jsonEncode({'accent': '#d03030'}));
+    await tester.pump(const Duration(seconds: 2)); // the next theme tick
+    await settleService(tester);
+    expect(primary(), isNot(before)); // followed while busy
+    File('${dir.path}/release').writeAsStringSync('');
+    await settleService(tester);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('settings changed by another process show without a refresh', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await settleService(tester);
+    await tester.tap(find.byTooltip('Settings').first);
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('settings-section-agents')));
+    await settleService(tester);
+    final daily = find.byKey(const ValueKey('ai-checks'));
+    await tester.scrollUntilVisible(
+      daily,
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    expect(tester.widget<SwitchListTile>(daily).value, isFalse);
+    File(
+      '${dir.path}/other.json',
+    ).writeAsStringSync(jsonEncode({'ai_checks': true}));
+    await tester.pump(const Duration(seconds: 2)); // the next check
+    await settleService(tester);
+    expect(tester.widget<SwitchListTile>(daily).value, isTrue);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('popup mode on Omarchy: placed when shown, Esc closes it', (
+    tester,
+  ) async {
+    final calls = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('window_manager'),
+      (call) async {
+        calls.add(call.method);
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('window_manager'),
+        null,
+      ),
+    );
+    final dir = await mountApp(
+      tester,
+      beforeStart: (d) {
+        File('${d.path}/omarchy').writeAsStringSync('');
+        File('${d.path}/window_popup').writeAsStringSync('');
+      },
+    );
+    await settleService(tester);
+    expect(
+      requests(dir).where((q) => q['method'] == 'window.popup').first['params'],
+      {'width': 1100, 'height': 760},
+    ); // floated under the bar at start
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await settleService(tester);
+    expect(calls, isNot(contains('hide'))); // Backspace never closes it
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await settleService(tester);
+    expect(calls, contains('hide'));
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('Omarchy by default: an ordinary window', (tester) async {
+    final dir = await mountApp(
+      tester,
+      beforeStart: (d) {
+        File('${d.path}/omarchy').writeAsStringSync('');
+      },
+    );
+    await settleService(tester);
+    expect(requests(dir).where((q) => q['method'] == 'window.popup'), isEmpty);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('a normal window elsewhere: Esc on the main page closes it', (
+    tester,
+  ) async {
+    final calls = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      const MethodChannel('window_manager'),
+      (call) async {
+        calls.add(call.method);
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        const MethodChannel('window_manager'),
+        null,
+      ),
+    );
+    final dir = await mountApp(tester);
+    await settleService(tester);
+    await tester.sendKeyEvent(LogicalKeyboardKey.backspace);
+    await settleService(tester);
+    expect(calls, isNot(contains('close'))); // Backspace never closes it
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await settleService(tester);
+    expect(requests(dir).where((q) => q['method'] == 'window.popup'), isEmpty);
+    // As its close button (the maprisma-layout rule), not hidden as a popup.
+    expect(calls, contains('close'));
+    expect(calls, isNot(contains('hide')));
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('the daily AI checks\' MCP updates in the MCP smart card', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).firstWhere((q) => q['method'] == 'checks.mcp_check')['params'],
+      {'force': false},
+    ); // the daily check, asked quietly at start
+    await tester.tap(find.byKey(const ValueKey('problems-open')));
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('smart-status-mcp')));
+    await settleService(tester);
+    expect(
+      find.text('MCP server fetch 1.5.0 is available (you have 1.4.2)'),
+      findsOneWidget,
+    );
+    expect(find.text('Faster.'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('mcp-release-fetch')));
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'checks.mcp_release')['params'],
+      {'name': 'fetch'},
+    );
+    await tester.tap(find.byKey(const ValueKey('mcp-task-fetch')));
+    await settleService(tester);
+    expect(find.textContaining('pinned to 1.4.2'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await settleService(tester);
+    expect(
+      requests(dir).where((q) => q['method'] == 'system.help_apply'),
+      isEmpty,
+    ); // nothing starts without Continue
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('a program found on this PC is added through the form', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('problems-open')));
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('smart-status-mcp')));
+    await settleService(tester);
+    expect(find.text('New on this PC: wordcraft'), findsOneWidget);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Add MCP server…'));
+    await settleService(tester);
+    expect(find.byKey(const ValueKey('found-panel')), findsOneWidget);
+    expect(find.text('★ new · ~/.local/bin/wordcraft-cli'), findsOneWidget);
+    expect(
+      find.text('1 AppImage not looked into yet (wordcraft.AppImage).'),
+      findsOneWidget,
+    );
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Look inside…'));
+    await settleService(tester);
+    expect(
+      requests(dir).where((q) => q['method'] == 'found.look_inside'),
+      hasLength(1),
+    );
+    expect(find.byKey(const ValueKey('found-panel')), findsOneWidget);
+    // Inside an AppImage: unpacked first, after a yes.
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('found-mcp-vectorcraft 1.2.0')),
+        matching: find.byType(OutlinedButton),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.textContaining('Unpacks vectorcraft.AppImage into'),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('found-unpack')));
+    await settleService(tester);
+    expect(
+      requests(dir).lastWhere((q) => q['method'] == 'found.unpack')['params'],
+      {'program': '/h/Applications/vectorcraft-1.2.0/usr/bin/vectorcraft-cli'},
+    );
+    expect(
+      find.widgetWithText(
+        TextFormField,
+        '/h/Applications/vectorcraft-1.2.0/usr/bin/vectorcraft-cli',
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.byKey(const ValueKey('found-open')));
+    await settleService(tester);
+    expect(
+      requests(dir).where((q) => q['method'] == 'found.seen').length,
+      greaterThanOrEqualTo(2),
+    );
+    await tester.tap(
+      find.descendant(
+        of: find.byKey(const ValueKey('found-mcp-wordcraft')),
+        matching: find.byType(OutlinedButton),
+      ),
+    );
+    await settleService(tester);
+    expect(find.byKey(const ValueKey('found-panel')), findsNothing);
+    expect(find.widgetWithText(TextFormField, 'wordcraft'), findsOneWidget);
+    expect(
+      find.widgetWithText(TextFormField, '/h/.local/bin/wordcraft-cli'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('an app update moves its users to the newer version', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('problems-open')));
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('smart-status-mcp')));
+    await settleService(tester);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Add MCP server…'));
+    await settleService(tester);
+    expect(find.text('gridcraft  0.7.0 → 0.8.0'), findsOneWidget);
+    expect(find.text('↑ Update · used by Claude Code'), findsOneWidget);
+    final scans = requests(
+      dir,
+    ).where((q) => q['method'] == 'found.scan').length;
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Update…'));
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'found.update_preview')['params'],
+      {'program': '/h/Applications/gridcraft-0.8.0/usr/bin/gridcraft-cli'},
+    );
+    expect(find.text('~/Applications/gridcraft-0.7.0/'), findsOneWidget);
+    expect(
+      find.text(
+        'The old version is kept with the backup for 7 days: Undo brings everything back.',
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+    await settleService(tester);
+    expect(
+      requests(
+        dir,
+      ).lastWhere((q) => q['method'] == 'connections.apply')['params'],
+      {'plan': 'opaque-update'},
+    );
+    await settleService(tester);
+    expect(
+      requests(dir).where((q) => q['method'] == 'found.scan').length,
+      greaterThan(scans),
+    ); // looked again: the update is done
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('AI Map leads back from the agent list on Help', (tester) async {
+    await mountApp(tester);
+    await settleService(tester);
+    final map = find.byKey(const ValueKey('details-agent:test'));
+    expect(map, findsOneWidget);
+    await openFromHelp(tester, 'Agents');
+    expect(find.text('Select an agent'), findsOneWidget);
+    expect(map, findsNothing);
+    await tester.tap(find.text('AI Map'));
+    await settleService(tester);
+    expect(find.text('Select an agent'), findsNothing);
+    expect(map, findsOneWidget);
+    // Tapping the map it already shows changes nothing.
+    await tester.tap(find.text('AI Map'));
+    await settleService(tester);
+    expect(map, findsOneWidget);
+    await unmountApp(tester);
+  });
+
+  testWidgets('Back, Esc and Backspace lead from details to the map', (
+    tester,
+  ) async {
+    await mountApp(tester);
+    await settleService(tester);
+    final details = find.byKey(const ValueKey('details-agent:test'));
+    final stepsBack = <Future<void> Function()>[
+      () => tester.tap(find.text('Back')),
+      () => tester.sendKeyEvent(LogicalKeyboardKey.escape),
+      () => tester.sendKeyEvent(LogicalKeyboardKey.backspace),
+    ];
+    for (final back in stepsBack) {
+      await tester.tap(details);
+      await settleService(tester);
+      expect(find.text('Back'), findsOneWidget);
+      await back();
+      await settleService(tester);
+      expect(find.text('Select an agent'), findsNothing);
+      expect(details, findsOneWidget);
+    }
+    await unmountApp(tester);
+  });
+
+  testWidgets(
+    'agent card controls show Usage, Details in menu, and red Stop only while running',
+    (tester) async {
+      final dir = await mountApp(tester);
+      await settleService(tester);
+
+      // When idle, Stop is not shown; Details and Usage symbols are shown.
+      expect(find.byKey(const ValueKey('stop-agent-test')), findsNothing);
+      expect(find.byKey(const ValueKey('details-agent:test')), findsOneWidget);
+      expect(find.byKey(const ValueKey('usage-agent-test')), findsOneWidget);
+
+      // Usage symbol opens the agent's usage dialog.
+      await tester.tap(find.byKey(const ValueKey('usage-agent-test')));
+      await settleService(tester);
+      expect(find.text('Usage · Test agent'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Close'));
+      await settleService(tester);
+
+      // Card menu uses "Details" instead of "Open".
+      await tester.tap(
+        find.descendant(
+          of: find
+              .ancestor(
+                of: find.text('Test agent'),
+                matching: find.byType(Card),
+              )
+              .first,
+          matching: find.byType(PopupMenuButton<String>),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Details'), findsOneWidget);
+      expect(find.text('Open'), findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      // When the agent runs, the red Stop symbol appears and stops the external instance.
+      File('${dir.path}/agent_running').writeAsStringSync('1');
+      await tester.tap(find.byTooltip('Refresh'));
+      await settleService(tester);
+      expect(find.byKey(const ValueKey('stop-agent-test')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('stop-agent-test')));
+      await settleService(tester);
+      expect(find.text('Stop external instance'), findsOneWidget);
+      expect(find.text('PID 42'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await settleService(tester);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'every finding from health.report appears in its column\'s smart card',
+    (tester) async {
+      await mountApp(
+        tester,
+        beforeStart: (d) {
+          File('${d.path}/health.json').writeAsStringSync(
+            jsonEncode({
+              'error': 1,
+              'hint': 3,
+              'level': 'error',
+              'summary': '1 thing to fix · 3 tips',
+              'open_text': '1 open problem',
+              'areas': [
+                {
+                  'key': 'connections',
+                  'title': 'MCP servers and skills',
+                  'icon': '',
+                  'findings': [
+                    {
+                      'level': 'hint',
+                      'column': 'mcp',
+                      'title': 'MCP finding in column 0',
+                      'text': '',
+                      'action': ['addmcp'],
+                    },
+                  ],
+                },
+                {
+                  'key': 'agents',
+                  'title': 'Agents',
+                  'icon': '',
+                  'findings': [
+                    {
+                      'level': 'error',
+                      'column': 'agents',
+                      'title': 'Agent finding in column 1',
+                      'text': '',
+                      'action': ['details', 'test'],
+                    },
+                  ],
+                },
+                {
+                  'key': 'local',
+                  'title': 'Local LLMs',
+                  'icon': '',
+                  'findings': [
+                    {
+                      'level': 'hint',
+                      'column': 'providers',
+                      'title': 'Provider finding in column 2',
+                      'text': '',
+                      'action': ['runtime', 'fixture'],
+                    },
+                    {
+                      'level': 'hint',
+                      'column': 'models',
+                      'title': 'Model finding in column 3',
+                      'text': '',
+                      'action': ['models', 'fixture'],
+                    },
+                  ],
+                },
+              ],
+              'uses': [],
+            }),
+          );
+        },
+      );
+      await settleService(tester);
+
+      for (final (col, expected) in const [
+        ('mcp', 'MCP finding in column 0'),
+        ('agents', 'Agent finding in column 1'),
+        ('providers', 'Provider finding in column 2'),
+        ('models', 'Model finding in column 3'),
+      ]) {
+        await tester.tap(find.byKey(const ValueKey('problems-open')));
+        await settleService(tester);
+        await tester.tap(find.byKey(ValueKey('smart-status-$col')));
+        await settleService(tester);
+        expect(find.text(expected), findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await settleService(tester);
+      }
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'a hidden column with a red problem turns the header symbol red, and clicking it reveals and opens that column\'s smart card on status',
+    (tester) async {
+      await mountApp(
+        tester,
+        beforeStart: (d) {
+          File('${d.path}/health.json').writeAsStringSync(
+            jsonEncode({
+              'error': 1,
+              'hint': 0,
+              'level': 'error',
+              'summary': '1 thing to fix',
+              'open_text': '1 open problem',
+              'areas': [
+                {
+                  'key': 'local',
+                  'title': 'Local LLMs',
+                  'icon': '',
+                  'findings': [
+                    {
+                      'level': 'error',
+                      'column': 'models',
+                      'title': 'Hidden model problem',
+                      'text': 'Fix model folder.',
+                      'action': ['models', 'fixture'],
+                    },
+                  ],
+                },
+              ],
+              'uses': [],
+            }),
+          );
+        },
+      );
+      await settleService(tester);
+
+      // Hide Models column (column 3) via the filter chip.
+      await tester.tap(find.byKey(const ValueKey('map-column-3')));
+      await settleService(tester);
+      expect(find.byKey(const ValueKey('smart-card')), findsNothing);
+
+      // Header status icon still has level 2 (red warn) because of the hidden column.
+      final headerIcon = tester.widget<SmartStatusIcon>(
+        find.descendant(
+          of: find.byKey(const ValueKey('problems-open')),
+          matching: find.byType(SmartStatusIcon),
+        ),
+      );
+      expect(headerIcon.level, 'error');
+
+      // Clicking the header symbol reveals Models and opens its smart card on the status list.
+      await tester.tap(find.byKey(const ValueKey('problems-open')));
+      await settleService(tester);
+      expect(find.byKey(const ValueKey('smart-card')), findsOneWidget);
+      expect(
+        tester
+            .widget<ChoiceChip>(
+              find.byKey(const ValueKey('smart-status-models')),
+            )
+            .selected,
+        isTrue,
+      );
+      expect(find.text('Hidden model problem'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets('an open Ask AI window holds the keys; Update closes it', (
+    tester,
+  ) async {
+    final dir = await mountApp(tester);
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('problems-open')));
+    await settleService(tester);
+    expect(find.byType(OverlayWindow), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('smart-rules')));
+    await settleService(tester);
+    expect(find.byType(ActionRulesWindow), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('rule-back')));
+    await settleService(tester);
+    expect(find.byType(ActionRulesWindow), findsNothing);
+    // The rules took the Ask AI window's place: open it again.
+    expect(find.byType(OverlayWindow), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('problems-open')));
+    await settleService(tester);
+    expect(find.byType(OverlayWindow), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.f1);
+    await settleService(tester);
+    expect(find.byKey(const ValueKey('help-manual')), findsNothing);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await settleService(tester);
+    expect(find.byType(OverlayWindow), findsNothing);
+    // The header works again.
+    await tester.sendKeyEvent(LogicalKeyboardKey.f1);
+    await settleService(tester);
+    expect(find.byKey(const ValueKey('help-manual')), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await settleService(tester);
+    await tester.tap(find.byKey(const ValueKey('problems-open')));
+    await settleService(tester);
+    await tester.tap(find.widgetWithText(OutlinedButton, 'Update').first);
+    await settleService(tester);
+    expect(find.byType(OverlayWindow), findsNothing);
+    expect(requests(dir).any((q) => q['method'] == 'updates.run'), isTrue);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets(
+    'the header Ask AI button opens examples that fill categorized prompts',
+    (tester) async {
+      await mountApp(
+        tester,
+        beforeStart: (d) =>
+            File('${d.path}/smart_helpers').writeAsStringSync('1'),
+      );
+      await settleService(tester);
+      await tester.tap(find.byKey(const ValueKey('ask-ai-open')));
+      await settleService(tester);
+      expect(find.byType(OverlayWindow), findsOneWidget);
+      for (final (index, column, title, text) in const [
+        (0, 'mcp', 'MCP servers and skills', 'Find an MCP server for my notes'),
+        (2, 'agents', 'Agents', 'Which agents need sign-in?'),
+        (4, 'providers', 'Providers', 'Why is my local LLM slow?'),
+        (6, 'models', 'Models', 'Find a model that fits my PC'),
+      ]) {
+        await tester.tap(find.byKey(ValueKey('smart-category-$column')));
+        await settleService(tester);
+        await tester.tap(find.byKey(ValueKey('smart-example-$index')));
+        await settleService(tester);
+        expect(find.text('Ask AI · $title'), findsOneWidget);
+        expect(
+          tester
+              .widget<TextField>(
+                find.descendant(
+                  of: find.byKey(const ValueKey('smart-card')),
+                  matching: find.byType(TextField),
+                ),
+              )
+              .controller
+              ?.text,
+          '$title: $text',
+        );
+      }
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settleService(tester);
+      expect(find.byType(OverlayWindow), findsNothing);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'Review on an Ask AI Performance proposal shows Performance inside the window',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (d) =>
+            File('${d.path}/smart_helpers').writeAsStringSync('1'),
+      );
+      await settleService(tester);
+      List<Map> calls(String method) =>
+          requests(dir).where((q) => q['method'] == method).toList();
+      await tester.tap(find.byKey(const ValueKey('ask-ai-open')));
+      await settleService(tester);
+      await tester.enterText(
+        find.descendant(
+          of: find.byKey(const ValueKey('smart-card')),
+          matching: find.byType(TextField),
+        ),
+        'Providers: Make llama faster',
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.send);
+      await settleService(tester);
+      await tester.tap(find.byKey(const ValueKey('smart-review-c1')));
+      List<Map> tuning() => calls(
+        'models.tuning',
+      ).where((q) => q['params']['key'] == 'fixture').toList();
+      for (var i = 0; i < 10 && tuning().isEmpty; i++) {
+        await settleService(tester);
+      }
+      expect(calls('providers.snapshot'), isNotEmpty);
+      expect(tuning(), hasLength(1));
+      for (
+        var i = 0;
+        i < 10 && find.byType(PerformanceView).evaluate().isEmpty;
+        i++
+      ) {
+        await settleService(tester);
+      }
+      // Inside Ask AI: the window stays open around it.
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('smart-card')),
+          matching: find.byType(PerformanceView),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(OverlayWindow), findsOneWidget);
+      // Back: the proposal again, then the main page, then the map.
+      await tester.tap(find.byKey(const ValueKey('smart-back')));
+      await settleService(tester);
+      expect(find.byType(PerformanceView), findsNothing);
+      expect(find.byKey(const ValueKey('smart-review-c1')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('smart-back')));
+      await settleService(tester);
+      await tester.tap(find.byKey(const ValueKey('smart-back')));
+      await settleService(tester);
+      expect(find.byType(OverlayWindow), findsNothing);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  Future<void> askAi(WidgetTester tester, String request) async {
+    await tester.tap(find.byKey(const ValueKey('ask-ai-open')));
+    await settleService(tester);
+    await tester.enterText(
+      find.descendant(
+        of: find.byKey(const ValueKey('smart-card')),
+        matching: find.byType(TextField),
+      ),
+      request,
+    );
+    await tester.testTextInput.receiveAction(TextInputAction.send);
+    await settleService(tester);
+  }
+
+  testWidgets(
+    'an Ask AI menu action opens the manual step: a local LLM\'s model',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (d) {
+          File('${d.path}/smart_helpers').writeAsStringSync('1');
+          File('${d.path}/smart_menu').writeAsStringSync('1');
+          File('${d.path}/serves').writeAsStringSync('');
+        },
+      );
+      await settleService(tester);
+      List<Map> calls(String method) =>
+          requests(dir).where((q) => q['method'] == method).toList();
+      await askAi(tester, 'Models: let the fixture use example-model');
+      // The step names come from the core in English, shown translated.
+      expect(find.text('Find existing AI'), findsWidgets);
+      await tester.tap(find.byKey(const ValueKey('smart-review-c1')));
+      await settleService(tester);
+      // The map's own step: the core's preview with its rules, one question.
+      expect(calls('models.choose_preview').single['params'], {
+        'model': 'model:runtime:fixture:example-model',
+        'provider': 'runtime:fixture',
+      });
+      expect(calls('map.smart_review'), isEmpty);
+      final dialog = find.byKey(const ValueKey('map-change-dialog'));
+      expect(
+        find.descendant(
+          of: dialog,
+          matching: find.text('Fixture provider → example-model'),
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(
+        find.descendant(of: dialog, matching: find.text('Apply')),
+      );
+      await settleService(tester);
+      expect(calls('models.choose_apply'), hasLength(1));
+      expect(find.widgetWithText(SnackBarAction, 'Undo'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'after an Ask AI download, Connect offers the agents the core names',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (d) {
+          File('${d.path}/smart_helpers').writeAsStringSync('1');
+          File('${d.path}/smart_download').writeAsStringSync('1');
+        },
+      );
+      await settleService(tester);
+      await askAi(tester, 'Models: a qwen model');
+      await tester.tap(find.byKey(const ValueKey('smart-review-c1')));
+      await settleService(tester);
+      await tester.tap(find.widgetWithText(FilledButton, 'Download'));
+      for (
+        var i = 0;
+        i < 10 && find.byType(ActionChip).evaluate().isEmpty;
+        i++
+      ) {
+        await settleService(tester);
+      }
+      expect(
+        requests(dir).where((q) => q['method'] == 'map.smart_run'),
+        hasLength(1),
+      );
+      // Pi can use a local LLM; the helper (Local helper) is not an agent here.
+      expect(find.widgetWithText(ActionChip, 'Pi'), findsOneWidget);
+      expect(find.widgetWithText(ActionChip, 'Local helper'), findsNothing);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'a slow read of the settings shows a spinner in Ask AI at once, then Performance',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (d) {
+          File('${d.path}/smart_helpers').writeAsStringSync('1');
+          // Reading the settings takes a while, as on a real PC.
+          File('${d.path}/slow_tuning').writeAsStringSync('1');
+        },
+      );
+      await settleService(tester);
+      await tester.tap(find.byKey(const ValueKey('ask-ai-open')));
+      await settleService(tester);
+      await tester.enterText(
+        find.descendant(
+          of: find.byKey(const ValueKey('smart-card')),
+          matching: find.byType(TextField),
+        ),
+        'Providers: Make llama faster',
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.send);
+      await settleService(tester);
+      await tester.tap(find.byKey(const ValueKey('smart-review-c1')));
+      await settleService(tester);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('smart-performance')),
+          matching: find.text('Checking…'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.byType(PerformanceView), findsNothing);
+      for (
+        var i = 0;
+        i < 20 && find.byType(PerformanceView).evaluate().isEmpty;
+        i++
+      ) {
+        await settleService(tester);
+      }
+      expect(find.byType(PerformanceView), findsOneWidget);
+      expect(find.text('Checking…'), findsNothing);
+      expect(
+        requests(dir).where(
+          (q) =>
+              q['method'] == 'models.tuning' && q['params']['key'] == 'fixture',
+        ),
+        hasLength(1),
+      );
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'a change from Performance in Ask AI is reviewed, then Ask AI is back on Performance',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (d) =>
+            File('${d.path}/smart_helpers').writeAsStringSync('1'),
+      );
+      await settleService(tester);
+      List<Map> calls(String method) =>
+          requests(dir).where((q) => q['method'] == method).toList();
+      await tester.tap(find.byKey(const ValueKey('ask-ai-open')));
+      await settleService(tester);
+      await tester.enterText(
+        find.descendant(
+          of: find.byKey(const ValueKey('smart-card')),
+          matching: find.byType(TextField),
+        ),
+        'Providers: Make llama faster',
+      );
+      await tester.testTextInput.receiveAction(TextInputAction.send);
+      await settleService(tester);
+      await tester.tap(find.byKey(const ValueKey('smart-review-c1')));
+      for (
+        var i = 0;
+        i < 10 && find.byType(PerformanceView).evaluate().isEmpty;
+        i++
+      ) {
+        await settleService(tester);
+      }
+      final reads = calls('models.tuning').length;
+      // A setting: its review takes the window's place.
+      final mode = find
+          .ancestor(
+            of: find.text('—'),
+            matching: find.byWidgetPredicate((w) => w is DropdownButton),
+          )
+          .first;
+      await tester.ensureVisible(mode);
+      await tester.pumpAndSettle();
+      await tester.tap(mode);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('b').last);
+      await settleService(tester);
+      expect(calls('models.tuning_preview'), hasLength(1));
+      expect(find.byKey(const ValueKey('smart-card')), findsNothing);
+      await tester.tap(find.widgetWithText(FilledButton, 'Apply'));
+      await settleService(tester);
+      // The result card, then Undo and its own result: Ask AI waits for all.
+      expect(find.byKey(const ValueKey('task-card')), findsOneWidget);
+      expect(find.text('Succeeded'), findsOneWidget);
+      expect(find.byKey(const ValueKey('smart-card')), findsNothing);
+      await tester.tap(find.widgetWithText(TextButton, 'Undo'));
+      await settleService(tester);
+      await settleService(tester);
+      // Its own result's token (not whatever applied last).
+      expect(calls('connections.undo').single['params'], {
+        'undo': 'undo-token',
+      });
+      expect(find.byKey(const ValueKey('task-card')), findsOneWidget);
+      expect(find.byKey(const ValueKey('smart-card')), findsNothing);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      // Back in the frame the last card closes: no gap for another card.
+      await tester.pump();
+      await tester.pump();
+      expect(find.byKey(const ValueKey('task-card')), findsNothing);
+      expect(find.byKey(const ValueKey('smart-card')), findsOneWidget);
+      await settleService(tester);
+      for (
+        var i = 0;
+        i < 10 && find.byType(PerformanceView).evaluate().isEmpty;
+        i++
+      ) {
+        await settleService(tester);
+      }
+      // Ask AI is back, on Performance read again.
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('smart-card')),
+          matching: find.byType(PerformanceView),
+        ),
+        findsOneWidget,
+      );
+      expect(calls('models.tuning').length, greaterThan(reads));
+      // Back, step by step: the proposal, the main page, the map.
+      await tester.tap(find.byKey(const ValueKey('smart-back')));
+      await settleService(tester);
+      expect(find.byKey(const ValueKey('smart-review-c1')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('smart-back')));
+      await settleService(tester);
+      expect(find.byKey(const ValueKey('smart-send')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('smart-back')));
+      await settleService(tester);
+      expect(find.byKey(const ValueKey('smart-card')), findsNothing);
+      // The map, not a review's card left underneath.
+      expect(find.byKey(const ValueKey('task-card')), findsNothing);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'a tunable provider box has a Performance symbol that opens its own card',
+    (tester) async {
+      await mountApp(tester);
+      await settleService(tester);
+      final symbol = find.byKey(const ValueKey('performance-runtime:fixture'));
+      for (var i = 0; i < 10 && symbol.evaluate().isEmpty; i++) {
+        await settleService(tester);
+      }
+      expect(symbol, findsOneWidget);
+      await tester.ensureVisible(symbol);
+      await tester.pumpAndSettle();
+      await tester.tap(symbol);
+      for (
+        var i = 0;
+        i < 10 && find.byType(PerformanceView).evaluate().isEmpty;
+        i++
+      ) {
+        await settleService(tester);
+      }
+      // Without Ask AI: its own card.
+      expect(find.byType(PerformanceView), findsOneWidget);
+      expect(find.byKey(const ValueKey('smart-card')), findsNothing);
+      expect(find.byKey(const ValueKey('task-card')), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets(
+    'the status chips switch the category in the same window, and a category shows the columns it needs',
+    (tester) async {
+      final dir = await mountApp(
+        tester,
+        beforeStart: (d) =>
+            File('${d.path}/smart_helpers').writeAsStringSync('1'),
+      );
+      await settleService(tester);
+      // Models hidden: asking about models brings its column (and Providers) back.
+      await tester.tap(find.byKey(const ValueKey('map-column-3')));
+      await settleService(tester);
+      await tester.tap(find.byKey(const ValueKey('ask-ai-open')));
+      await settleService(tester);
+      final window = tester.state(find.byType(OverlayWindow));
+      await tester.tap(find.byKey(const ValueKey('smart-category-models')));
+      await settleService(tester);
+      await tester.tap(find.byKey(const ValueKey('smart-example-6')));
+      await settleService(tester);
+      expect(find.text('Ask AI · Models'), findsOneWidget);
+      expect(tester.state(find.byType(OverlayWindow)), same(window));
+      final layers =
+          requests(
+                dir,
+              ).lastWhere((q) => q['method'] == 'settings.update')['params']
+              as Map;
+      expect(
+        (layers['values'] as Map)['map_layers'],
+        containsAll(['models', 'online', 'local']),
+      );
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settleService(tester);
+
+      await tester.tap(find.byKey(const ValueKey('problems-open')));
+      await settleService(tester);
+      final status = tester.state(find.byType(OverlayWindow));
+      for (final col in const ['mcp', 'agents', 'providers', 'models']) {
+        await tester.tap(find.byKey(ValueKey('smart-status-$col')));
+        await settleService(tester);
+        expect(
+          tester
+              .widget<ChoiceChip>(find.byKey(ValueKey('smart-status-$col')))
+              .selected,
+          isTrue,
+        );
+        expect(tester.state(find.byType(OverlayWindow)), same(status));
+      }
+      expect(tester.takeException(), isNull);
+      await unmountApp(tester);
+    },
+  );
+
+  testWidgets('the use cases stay reachable in Help', (tester) async {
+    await mountApp(tester);
+    await settleService(tester);
+    await openFromHelp(tester, 'What you can do with it');
+    expect(find.byKey(const ValueKey('use-coding')), findsOneWidget);
+    expect(find.text('Vibe coding'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+
+  testWidgets('the use cases appear on the welcome page', (tester) async {
+    await mountApp(tester, welcome: true);
+    await settleService(tester);
+    expect(find.text('What you can do with it'), findsOneWidget);
+    expect(find.byKey(const ValueKey('use-coding')), findsOneWidget);
+    expect(find.text('Vibe coding'), findsOneWidget);
+    expect(find.text('Almost'), findsOneWidget);
+    expect(find.text('✓ Test agent'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await unmountApp(tester);
+  });
+}
+
+/// The page's own list in Settings (not the Find in Settings field).
+Finder get settingsList => find
+    .descendant(
+      of: find.byKey(const ValueKey('settings-content')),
+      matching: find.byType(Scrollable),
+    )
+    .first;

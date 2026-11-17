@@ -1,0 +1,2136 @@
+{
+ "other": [
+  "addons.install_file",
+  "agents.halt",
+  "agents.key",
+  "checks.mcp",
+  "general.architecture",
+  "health.pc",
+  "llama.cpp",
+  "mcp.registry_refresh",
+  "mcp.tools_test",
+  "model.import",
+  "model.load",
+  "model.unload",
+  "model.yml",
+  "models.download",
+  "models.files",
+  "models.providers",
+  "models.pull",
+  "models.remove",
+  "models.search",
+  "runtime.start",
+  "runtime.stop",
+  "serve.server",
+  "system.analyze"
+ ],
+ "protocol": 2,
+ "routes": {
+  "addons.catalog": {
+   "area": "addons",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "addons.enable_found": {
+   "area": "addons",
+   "kind": "change",
+   "note": "At the start: switches on the add-ons of what setup.detect found (ids), except those the user switched off (addons_off). Never switches one off.",
+   "params": {
+    "ids": [
+     "string"
+    ]
+   },
+   "result": {
+    "addons": [
+     {
+      "capabilities": [
+       "string"
+      ],
+      "description": "string",
+      "enabled": "bool",
+      "id": "string",
+      "kind": "string",
+      "legacy": "bool",
+      "loaded": "bool",
+      "name": "string",
+      "privacy": "int",
+      "provides": [
+       "string"
+      ],
+      "reads": [
+       "string"
+      ],
+      "removable": "bool",
+      "sends": [
+       "string"
+      ],
+      "sign_ins": [
+       {
+        "command": "string",
+        "name": "string"
+       }
+      ],
+      "state": "string",
+      "summary": "string",
+      "supported": "bool",
+      "verified": "bool",
+      "version": "string"
+     }
+    ],
+    "switched_on": [
+     "string"
+    ]
+   },
+   "source": "manual"
+  },
+  "addons.file_install": {
+   "area": "addons",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "addons.file_preview": {
+   "area": "addons",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "path": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "addons.hints": {
+   "area": "addons",
+   "kind": "read",
+   "note": "Each line has kind (off, new, updates), column (agents, providers) and text; off and new have ids, updates has updates.",
+   "params": {},
+   "result": {
+    "lines": [
+     {
+      "column": "string",
+      "kind": "string",
+      "text": "string"
+     }
+    ]
+   },
+   "source": "manual"
+  },
+  "addons.install": {
+   "area": "addons",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "addons.list": {
+   "area": "addons",
+   "kind": "read",
+   "note": "The add-ons found (user folder first, then the app's), each verified; legacy: signed for Asterism (the old name), never loaded.",
+   "params": {},
+   "result": {
+    "addons": [
+     {
+      "capabilities": [
+       "string"
+      ],
+      "description": "string",
+      "enabled": "bool",
+      "id": "string",
+      "kind": "string",
+      "legacy": "bool",
+      "loaded": "bool",
+      "name": "string",
+      "privacy": "int",
+      "provides": [
+       "string"
+      ],
+      "reads": [
+       "string"
+      ],
+      "removable": "bool",
+      "sends": [
+       "string"
+      ],
+      "sign_ins": [
+       {
+        "command": "string",
+        "name": "string"
+       }
+      ],
+      "state": "string",
+      "summary": "string",
+      "supported": "bool",
+      "verified": "bool",
+      "version": "string"
+     }
+    ]
+   },
+   "source": "manual"
+  },
+  "addons.remove_apply": {
+   "area": "addons",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "preview": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "addons.remove_preview": {
+   "area": "addons",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "id": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "addons.remove_undo": {
+   "area": "addons",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "undo": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "addons.set_enabled": {
+   "area": "addons",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "enabled": "?",
+    "id": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "agents.action_apply": {
+   "area": "agents",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "preview": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "agents.action_preview": {
+   "area": "agents",
+   "kind": "preview",
+   "note": "",
+   "optional": [
+    "kind",
+    "login"
+   ],
+   "params": {
+    "action": "?",
+    "command": "?",
+    "kind": "?",
+    "login": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "agents.activity": {
+   "area": "agents",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "command": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "agents.costs": {
+   "area": "agents",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "command": "string"
+   },
+   "result": {
+    "card": "null",
+    "rate_due": "bool"
+   },
+   "source": "observed"
+  },
+  "agents.details": {
+   "area": "agents",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "command": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "agents.halt_apply": {
+   "area": "agents",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "preview": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "agents.halt_preview": {
+   "area": "agents",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "command": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "agents.health": {
+   "area": "agents",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "agents.key_apply": {
+   "area": "agents",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "key": "?",
+    "preview": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "agents.key_preview": {
+   "area": "agents",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "command": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "agents.projects": {
+   "area": "agents",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "command": "string"
+   },
+   "result": {
+    "card": "null"
+   },
+   "source": "observed"
+  },
+  "agents.security": {
+   "area": "agents",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "command": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "agents.security_preview": {
+   "area": "agents",
+   "kind": "preview",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "agents.traffic": {
+   "area": "agents",
+   "kind": "read",
+   "note": "Each agent's TCP traffic while the app is open (ss -tinpeHn, UDP not counted): poll every few seconds, a new sample at most every 3 s. available is false when ss is missing. Per command: since, received, sent, connections, rate_in, rate_out (bytes/s), places [{name, kind (api, local-llm, local, lan, web), received, sent, connections}], programs [{name, received, sent}], history [[time, in, out]].",
+   "params": {},
+   "result": {
+    "agents": {},
+    "available": "bool"
+   },
+   "source": "manual"
+  },
+  "agents.usage_refresh": {
+   "area": "agents",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "command": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "app.identity": {
+   "area": "app",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": {
+    "app_id": "string",
+    "cache_dir": "string",
+    "config_dir": "string",
+    "name": "string",
+    "short_name": "string"
+   },
+   "source": "observed"
+  },
+  "app.settings_changed": {
+   "area": "app",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "app.snapshot": {
+   "area": "app",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "app.theme": {
+   "area": "app",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": {
+    "fonts": {
+     "mono": "string",
+     "ui": "string"
+    },
+    "theme": {
+     "accent": "string",
+     "background": "string",
+     "foreground": "string"
+    }
+   },
+   "source": "manual"
+  },
+  "changes.history": {
+   "area": "changes",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "changes.undo": {
+   "area": "changes",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "id": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "checks.mcp_check": {
+   "area": "checks",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "force": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "checks.mcp_release": {
+   "area": "checks",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "name": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "checks.mcp_task": {
+   "area": "checks",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "name": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "checks.mcp_updates": {
+   "area": "checks",
+   "kind": "read",
+   "note": "Each update has column: mcp.",
+   "params": {},
+   "result": {
+    "agent": "null|string",
+    "due": "bool",
+    "on": "bool",
+    "servers": "int",
+    "summary": "string",
+    "task_agent": "null|string",
+    "updates": [
+     {
+      "app": "string",
+      "column": "string",
+      "current": "string",
+      "latest": "string",
+      "name": "string",
+      "notes": "string",
+      "on_pc": "bool",
+      "program": "string",
+      "source": "string",
+      "text": "string",
+      "url": "string"
+     }
+    ]
+   },
+   "source": "manual"
+  },
+  "connections.apply": {
+   "area": "connections",
+   "handle": "plan",
+   "kind": "handle",
+   "note": "",
+   "params": {
+    "plan": "string"
+   },
+   "result": {
+    "ok": "bool",
+    "task": "string",
+    "undo": "null"
+   },
+   "source": "observed"
+  },
+  "connections.author_preview": {
+   "area": "connections",
+   "kind": "preview",
+   "note": "",
+   "optional": [
+    "entry",
+    "folder",
+    "name"
+   ],
+   "params": {
+    "agents": [
+     "string"
+    ],
+    "entry": "object",
+    "folder": "string",
+    "kind": "string",
+    "name": "string"
+   },
+   "result": {
+    "agents": [
+     "string"
+    ],
+    "contexts": [],
+    "empty": "bool",
+    "files": [
+     {
+      "added": "int",
+      "path": "string",
+      "removed": "int"
+     }
+    ],
+    "focus": [
+     "string"
+    ],
+    "item": "string",
+    "kind": "string",
+    "links_add": [
+     [
+      "string"
+     ]
+    ],
+    "links_remove": [],
+    "notes": [
+     "string"
+    ],
+    "plan": "string"
+   },
+   "source": "observed"
+  },
+  "connections.forget_preview": {
+   "area": "connections",
+   "kind": "preview",
+   "note": "name: the map's id of a known server no agent uses (name, or name~2). It leaves mcp-servers.json; applied through connections.apply, with Undo.",
+   "params": {
+    "name": "string"
+   },
+   "result": {
+    "contexts": [],
+    "empty": "bool",
+    "files": [
+     {
+      "added": "int",
+      "path": "string",
+      "removed": "int"
+     }
+    ],
+    "focus": [
+     "string"
+    ],
+    "item": "string",
+    "kind": "string",
+    "links_add": [],
+    "links_remove": [],
+    "plan": "string",
+    "remove": "bool"
+   },
+   "source": "manual"
+  },
+  "connections.move_preview": {
+   "area": "connections",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "agent": "string",
+    "new": "null|string",
+    "old": "string"
+   },
+   "result": {
+    "agents": [
+     "string"
+    ],
+    "contexts": [],
+    "empty": "bool",
+    "files": [
+     {
+      "added": "int",
+      "path": "string",
+      "removed": "int"
+     }
+    ],
+    "focus": [
+     "string"
+    ],
+    "links_add": [],
+    "links_remove": [],
+    "model_actions": [],
+    "notes": [],
+    "plan": "string"
+   },
+   "source": "observed"
+  },
+  "connections.preview": {
+   "area": "connections",
+   "kind": "preview",
+   "note": "name (provider only): the agent's own name for an entry of this local LLM (Repair of a moved one rewrites that entry, not the usual one); only one the agent has, pointing at a local LLM.",
+   "optional": [
+    "model",
+    "name",
+    "use_now"
+   ],
+   "params": {
+    "command": "string",
+    "item": "string",
+    "kind": "string",
+    "model": "string",
+    "name": "string",
+    "remove": "bool",
+    "use_now": "bool"
+   },
+   "result": {
+    "command": "string",
+    "contexts": [],
+    "empty": "bool",
+    "files": [
+     {
+      "added": "int",
+      "path": "string",
+      "removed": "int"
+     }
+    ],
+    "focus": [
+     "string"
+    ],
+    "item": "string",
+    "kind": "string",
+    "links_add": [
+     [
+      "string"
+     ]
+    ],
+    "links_remove": [],
+    "plan": "string",
+    "remove": "bool"
+   },
+   "source": "observed"
+  },
+  "connections.repair_preview": {
+   "area": "connections",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "agent": "string",
+    "target": "string"
+   },
+   "result": {
+    "command": "string",
+    "contexts": [],
+    "empty": "bool",
+    "files": [
+     {
+      "added": "int",
+      "path": "string",
+      "removed": "int"
+     }
+    ],
+    "focus": [
+     "string"
+    ],
+    "item": "string",
+    "kind": "string",
+    "links_add": [],
+    "links_remove": [],
+    "plan": "string",
+    "remove": "bool"
+   },
+   "source": "observed"
+  },
+  "connections.snapshot": {
+   "area": "connections",
+   "kind": "read",
+   "note": "",
+   "optional": [
+    "command"
+   ],
+   "params": {
+    "command": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "connections.undo": {
+   "area": "connections",
+   "handle": "undo",
+   "kind": "handle",
+   "note": "restored: the files put back (one changed again since is skipped). choice_failures: the local LLMs' own models (Settings › provider_models) the apply moved that were not put back: an agent file was skipped, or the choice changed since.",
+   "params": {
+    "undo": "string"
+   },
+   "result": {
+    "choice_failures": "int",
+    "ok": "bool",
+    "restored": [
+     "string"
+    ]
+   },
+   "source": "manual"
+  },
+  "costs.rate": {
+   "area": "costs",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "desktop.snapshot": {
+   "area": "desktop",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": {
+    "name": "string",
+    "theme_dir": "null|string"
+   },
+   "source": "observed"
+  },
+  "details.mcp": {
+   "area": "details",
+   "kind": "read",
+   "note": "name: the map's id of the server (its name, or name~2 for another server of that name). server: that id; title: its name.",
+   "params": {
+    "name": "string"
+   },
+   "result": {
+    "intro": "string",
+    "missing": "string",
+    "missing_title": "string",
+    "sections": [
+     {
+      "heading": "string",
+      "rows": [
+       [
+        "string"
+       ]
+      ]
+     }
+    ],
+    "server": "string",
+    "text": "string",
+    "title": "string",
+    "tools": []
+   },
+   "source": "manual"
+  },
+  "details.skills": {
+   "area": "details",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "path": "string"
+   },
+   "result": {
+    "intro": "string",
+    "missing": "string",
+    "missing_title": "string",
+    "sections": [
+     {
+      "heading": "string",
+      "rows": [
+       [
+        "string"
+       ]
+      ]
+     }
+    ],
+    "text": "string",
+    "title": "string",
+    "tools": []
+   },
+   "source": "observed"
+  },
+  "dictation.run": {
+   "area": "dictation",
+   "kind": "change",
+   "note": "Runs a dictation setup, update, model or removal action.",
+   "optional": [
+    "target"
+   ],
+   "params": {
+    "action": "string",
+    "target": "string"
+   },
+   "result": {
+    "ok": "bool"
+   },
+   "source": "manual"
+  },
+  "dictation.snapshot": {
+   "area": "dictation",
+   "kind": "read",
+   "note": "Voice dictation status across Omarchy dictation, local Whisper, local LLM speech models, and connected online providers.",
+   "params": {},
+   "result": {
+    "active": "string",
+    "active_label": "string",
+    "configured": "bool",
+    "cost_hint": "string",
+    "enabled": "bool",
+    "engine": "string",
+    "local": "object",
+    "omarchy": "object",
+    "online": "object",
+    "ready": "bool",
+    "recording": "bool",
+    "transcribing": "bool",
+    "whisper": "object",
+    "whisper_model": "string"
+   },
+   "source": "manual"
+  },
+  "dictation.start": {
+   "area": "dictation",
+   "kind": "change",
+   "note": "Starts microphone capture or Omarchy dictation (`mode`: `wav` or `omarchy`).",
+   "params": {},
+   "result": {
+    "engine": "string",
+    "mode": "string",
+    "recording": "string"
+   },
+   "source": "manual"
+  },
+  "dictation.stop": {
+   "area": "dictation",
+   "kind": "change",
+   "note": "Stops microphone capture or Omarchy dictation, transcribes the recorded WAV (unless `cancel` is true), deletes the temporary file, and returns the text.",
+   "optional": [
+    "cancel",
+    "recording"
+   ],
+   "params": {
+    "cancel": "bool",
+    "recording": "string"
+   },
+   "result": {
+    "cost_hint": "string",
+    "elapsed_ms": "int",
+    "engine": "string",
+    "mode": "string",
+    "text": "string",
+    "typed_by_desktop": "bool"
+   },
+   "source": "manual"
+  },
+  "existing.apply": {
+   "area": "existing",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "existing.check": {
+   "area": "existing",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "existing.mounts": {
+   "area": "existing",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "existing.preview": {
+   "area": "existing",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "found": "?",
+    "models": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "existing.scan": {
+   "area": "existing",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "found.hints": {
+   "area": "found",
+   "kind": "read",
+   "note": "Each line has kind (found, versions), column (mcp), text, mcp and skills.",
+   "params": {},
+   "result": {
+    "lines": [
+     {
+      "column": "string",
+      "kind": "string",
+      "mcp": "bool",
+      "skills": "bool",
+      "text": "string"
+     }
+    ]
+   },
+   "source": "manual"
+  },
+  "found.list": {
+   "area": "found",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "kind": "string"
+   },
+   "result": {
+    "checked": "bool",
+    "items": [],
+    "looking_text": "string",
+    "not_looked": [],
+    "not_looked_text": "string",
+    "set_up": "int",
+    "updates": []
+   },
+   "source": "observed"
+  },
+  "found.look_inside": {
+   "area": "found",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "found.scan": {
+   "area": "found",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "found.seen": {
+   "area": "found",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "kind": "string"
+   },
+   "result": {
+    "ok": "bool"
+   },
+   "source": "observed"
+  },
+  "found.unpack": {
+   "area": "found",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "program": "string"
+   },
+   "result": null,
+   "source": null
+  },
+  "found.update_preview": {
+   "area": "found",
+   "kind": "preview",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "gpu.snapshot": {
+   "area": "gpu",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "guide.choose": {
+   "area": "guide",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "route": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "guide.snapshot": {
+   "area": "guide",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "health.report": {
+   "area": "health",
+   "kind": "read",
+   "note": "A task. Its result: areas (key, icon, title, findings), uses (key, icon, title, blurb, have, level, steps), error, warn, hint, level, summary, open_text. Levels: error (broken: the header's red \"!\"), warn (only low limits and updates), hint (a tip), ok. Every finding and use step has level, title, text, action and column (mcp, agents, providers, models).",
+   "params": {},
+   "result": {
+    "task": "string"
+   },
+   "source": "manual"
+  },
+  "help.open_manual": {
+   "area": "help",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": {
+    "opened": "bool"
+   },
+   "source": "observed"
+  },
+  "help.snapshot": {
+   "area": "help",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": {
+    "manual": "bool"
+   },
+   "source": "observed"
+  },
+  "helper.snapshot": {
+   "area": "helper",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "i18n.lookup": {
+   "area": "i18n",
+   "kind": "read",
+   "note": "",
+   "optional": [
+    "n",
+    "other"
+   ],
+   "params": {
+    "n": "int",
+    "other": "string",
+    "text": "string"
+   },
+   "result": {
+    "language": "string",
+    "text": "string"
+   },
+   "source": "observed"
+  },
+  "installers.install": {
+   "area": "installers",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "installers.preview": {
+   "area": "installers",
+   "kind": "preview",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "jobs.continue": {
+   "area": "jobs",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "id": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "jobs.discard": {
+   "area": "jobs",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "id": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "jobs.list": {
+   "area": "jobs",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "limits.notify": {
+   "area": "limits",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": {
+    "sent": []
+   },
+   "source": "observed"
+  },
+  "map.badges": {
+   "area": "map",
+   "kind": "read",
+   "note": "badges: per agent box (agent:<command>) {kind: battery (its plan limits) or cost (paid per token: label, today's money), left (0..1 left; for a cost what is left of the day's limit, only with a limit), colour (green, yellow, red at the levels of Settings: Costs), tip, stale (true: the limits may be out of date: kept past a failed probe or measured over 30 minutes ago), name and red_body (a cost)}.",
+   "params": {},
+   "result": {
+    "badges": {},
+    "rate_due": "bool"
+   },
+   "source": "manual"
+  },
+  "map.smart_ask": {
+   "area": "map",
+   "kind": "read",
+   "note": "column: mcp, agents, providers, models. Spends the user's tokens only on their click. tasks.status result: status proposal, clarify, redirect or error; helper, local, summary, question, choices, instead {hint, column, request}, limits {gpu_name, vram, ram, free_disk}, proposal, candidates [{id, title, subtitle, reason, fit (ok, tight, too_large), size, kind, agents}]. A map_edit candidate names a checked manual map preview route and its parameters; no write occurs until preview and Apply. A model download candidate has connect [{command, name}]: the installed agents that can use a local LLM, as the manual Connect offers them. A menu_action candidate {area (agents, addons, models, existing, mcp), step, key, model} is a manual menu action the app opens itself, with that menu's own preview, rule check, review and Undo; the rules are checked before it is shown.",
+   "optional": [
+    "answer"
+   ],
+   "params": {
+    "answer": "string",
+    "column": "string",
+    "command": "string",
+    "request": "string"
+   },
+   "result": {
+    "task": "string"
+   },
+   "source": "manual"
+  },
+  "map.smart_connect": {
+   "area": "map",
+   "kind": "preview",
+   "note": "As connections.preview: a plan for ConnectionReview and connections.apply, with its other fields; the model becomes the agent's model now (use_now), as a drawn connection does. Refused until the model is on this PC, and for an agent that is not in the candidate's connect list.",
+   "params": {
+    "agent": "string",
+    "candidate": "string",
+    "proposal": "string"
+   },
+   "result": {
+    "plan": "string"
+   },
+   "source": "manual"
+  },
+  "map.smart_helpers": {
+   "area": "map",
+   "kind": "read",
+   "note": "Who can answer a smart card now; nothing is sent.",
+   "params": {},
+   "result": {
+    "helpers": [
+     {
+      "command": "string",
+      "local": "bool",
+      "name": "string"
+     }
+    ]
+   },
+   "source": "manual"
+  },
+  "map.smart_plan": {
+   "area": "map",
+   "kind": "preview",
+   "note": "An approved MCP or map_edit candidate as the app's normal preview: a plan for ConnectionReview, then connections.apply. For map_edit the core validates the selected route, its parameters and the current action rules before calling the same preview as a manual map edit. agents and values come from the user; a secret goes no further than the preview.",
+   "params": {
+    "agents": [
+     "string"
+    ],
+    "candidate": "string",
+    "proposal": "string",
+    "values": "object"
+   },
+   "result": {
+    "plan": "string"
+   },
+   "source": "manual"
+  },
+  "map.smart_review": {
+   "area": "map",
+   "kind": "read",
+   "note": "The facts for the review of one candidate; for a model removal or an agent action its normal preview; for a folder move a task whose result is the plan. For a task after a web look-up: {preview, name, prompt, topic} for system.help_apply.",
+   "params": {
+    "candidate": "string",
+    "proposal": "string"
+   },
+   "result": {
+    "fit": "string",
+    "runtime": "string",
+    "size": "int",
+    "subtitle": "string",
+    "title": "string"
+   },
+   "source": "manual"
+  },
+  "map.smart_run": {
+   "area": "map",
+   "kind": "change",
+   "note": "After the user's OK: starts it, once. A candidate that is too large is refused; a removal, a folder move or an agent action needs its review first. An agent action answers like agents.action_apply.",
+   "params": {
+    "candidate": "string",
+    "proposal": "string"
+   },
+   "result": {
+    "focus": [
+     "string"
+    ],
+    "task": "string"
+   },
+   "source": "manual"
+  },
+  "map.snapshot": {
+   "area": "map",
+   "kind": "read",
+   "note": "nodes: dim marks a known server without agents; an agent's own_provider is the id of its own online provider (\"\" for none); own_login: the app can start its sign-in there (a drop onto that provider signs it in only then); a model with status missing is one an agent is set to that its local LLM no longer has; a model:folder:<path>:<name> model is in a reused model folder no local LLM lists. mcp:<name>~2 is another server of that name. edges: fixed says why a line cannot be taken away here; a failed agent → runtime line with no recorded failure is a local provider whose LLM moved (dangling: the model the agent is set to there, \"\" for an inactive one), repaired by connections.repair_preview unless fixed says where to change it instead; available from an agent to its own online provider: not signed in.",
+   "optional": [
+    "force",
+    "poll"
+   ],
+   "params": {
+    "force": "?",
+    "poll": "?"
+   },
+   "result": {
+    "edges": [
+     "object"
+    ],
+    "nodes": [
+     "object"
+    ],
+    "pending": "bool"
+   },
+   "source": "manual"
+  },
+  "map.usage": {
+   "area": "map",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "commands": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "mcp.catalog": {
+   "area": "mcp",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "mcp.option_preview": {
+   "area": "mcp",
+   "kind": "preview",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "mcp.option_test": {
+   "area": "mcp",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "mcp.search": {
+   "area": "mcp",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "mcp.tools": {
+   "area": "mcp",
+   "kind": "read",
+   "note": "name: the map's id (name, or name~2). Asks that very server (the command, address and agent of that id); tasks.status result: status, checked, tools, prompts, server or error, kept per id and server.",
+   "params": {
+    "name": "string"
+   },
+   "result": {
+    "task": "string"
+   },
+   "source": "manual"
+  },
+  "mcp.tools_cached": {
+   "area": "mcp",
+   "kind": "read",
+   "note": "name: the map's id (name, or name~2). cached: the last answer of mcp.tools for that very server, or null.",
+   "params": {
+    "name": "string"
+   },
+   "result": {
+    "cached": "?"
+   },
+   "source": "manual"
+  },
+  "models.attach_preview": {
+   "area": "models",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "agents": [
+     "string"
+    ],
+    "model": "string",
+    "provider": "string"
+   },
+   "result": {
+    "agents": [
+     "string"
+    ],
+    "contexts": [],
+    "empty": "bool",
+    "files": [
+     {
+      "added": "int",
+      "path": "string",
+      "removed": "int"
+     }
+    ],
+    "focus": [
+     "string"
+    ],
+    "links_add": [],
+    "links_remove": [],
+    "model_actions": [
+     {
+      "model": "string",
+      "operation": "string"
+     }
+    ],
+    "notes": [
+     "string"
+    ],
+    "plan": "string"
+   },
+   "source": "observed"
+  },
+  "models.choose_apply": {
+   "area": "models",
+   "kind": "change",
+   "note": "Applies a models.choose_preview once; undo puts back the choice before it (models.choose_undo).",
+   "params": {
+    "preview": "string"
+   },
+   "result": {
+    "ok": "bool",
+    "undo": "string"
+   },
+   "source": "manual"
+  },
+  "models.choose_preview": {
+   "area": "models",
+   "kind": "preview",
+   "note": "A local LLM's own model choice on the map (Settings provider_models), checked by the same rules as models.switch_preview: leaving the old model, reaching the new one. model null: none. Ask AI proposes the same step. Nothing changes until models.choose_apply.",
+   "params": {
+    "model": "null|string",
+    "provider": "string"
+   },
+   "result": {
+    "empty": "bool",
+    "focus": [
+     "string"
+    ],
+    "line": "string",
+    "new": "null|string",
+    "old": "null|string",
+    "preview": "string"
+   },
+   "source": "manual"
+  },
+  "models.choose_undo": {
+   "area": "models",
+   "kind": "change",
+   "note": "Undo of models.choose_apply: that local LLM's choice before it, when nothing changed it since.",
+   "params": {
+    "undo": "string"
+   },
+   "result": {
+    "ok": "bool"
+   },
+   "source": "manual"
+  },
+  "models.remove_apply": {
+   "area": "models",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "removal": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "models.remove_preview": {
+   "area": "models",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "key": "?",
+    "model": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "models.slots_preview": {
+   "area": "models",
+   "kind": "preview",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "models.slots_reload": {
+   "area": "models",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "models.switch_preview": {
+   "area": "models",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "new": "null|string",
+    "old": "string",
+    "provider": "string"
+   },
+   "result": {
+    "agents": [
+     "string"
+    ],
+    "contexts": [],
+    "empty": "bool",
+    "files": [
+     {
+      "added": "int",
+      "path": "string",
+      "removed": "int"
+     }
+    ],
+    "focus": [
+     "string"
+    ],
+    "links_add": [],
+    "links_remove": [],
+    "model_actions": [
+     {
+      "model": "string",
+      "operation": "string"
+     }
+    ],
+    "notes": [
+     "string"
+    ],
+    "plan": "string"
+   },
+   "source": "observed"
+  },
+  "models.tune": {
+   "area": "models",
+   "kind": "read",
+   "note": "Measures llama.cpp models on this card with the build the service runs (llama-bench in the worker); the task result is a preview applied with connections.apply, or refused (a text: the card is in use, no llama-bench, a wrapper script while the service is stopped) with nothing changed. Each measurement is kept in llm-tuning.json (state folder, owner only).",
+   "params": {
+    "key": "string",
+    "models": "null|[string]"
+   },
+   "result": {
+    "focus": [
+     "string"
+    ],
+    "task": "string"
+   },
+   "source": "manual"
+  },
+  "models.tuning": {
+   "area": "models",
+   "kind": "read",
+   "note": "The task result: the local LLM's facts, with build_path (the binary its service runs) and untuned (llama.cpp models with no measurement in llm-tuning.json for that build).",
+   "params": {
+    "key": "string"
+   },
+   "result": {
+    "focus": [
+     "string"
+    ],
+    "task": "string"
+   },
+   "source": "manual"
+  },
+  "models.tuning_ask": {
+   "area": "models",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "models.tuning_preview": {
+   "area": "models",
+   "kind": "preview",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "projects.forget": {
+   "area": "projects",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "projects.pin": {
+   "area": "projects",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "providers.details": {
+   "area": "providers",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "key": "string"
+   },
+   "result": {
+    "now": "string",
+    "risks": [],
+    "tiles": [
+     [
+      "string"
+     ]
+    ],
+    "usage": "null"
+   },
+   "source": "observed"
+  },
+  "providers.health": {
+   "area": "providers",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "providers.run": {
+   "area": "providers",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "operation": "?",
+    "params": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "providers.snapshot": {
+   "area": "providers",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "rules.test": {
+   "area": "rules",
+   "kind": "read",
+   "note": "Which rule decides a request, for the window of rules.",
+   "params": {
+    "action": "string",
+    "agent": "string",
+    "category": "string",
+    "item": "string"
+   },
+   "result": {
+    "allowed": "bool",
+    "rule": "null|object"
+   },
+   "source": "manual"
+  },
+  "sessions.read": {
+   "area": "sessions",
+   "handle": "session",
+   "kind": "handle",
+   "note": "",
+   "params": {
+    "session": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "sessions.resize": {
+   "area": "sessions",
+   "handle": "session",
+   "kind": "handle",
+   "note": "",
+   "params": {
+    "cols": "?",
+    "rows": "?",
+    "session": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "sessions.start": {
+   "area": "sessions",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "command": "string",
+    "outside": "bool",
+    "path": "string|null"
+   },
+   "result": null,
+   "source": null
+  },
+  "sessions.stop": {
+   "area": "sessions",
+   "handle": "session",
+   "kind": "handle",
+   "note": "",
+   "params": {
+    "session": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "sessions.write": {
+   "area": "sessions",
+   "handle": "session",
+   "kind": "handle",
+   "note": "",
+   "params": {
+    "data": "?",
+    "session": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "settings.get": {
+   "area": "settings",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": {
+    "action_rule_hints": "bool",
+    "action_rules": [
+     "object"
+    ],
+    "addons_online": "bool",
+    "agent_folder": "null|string",
+    "ai_checks": "bool",
+    "ai_checks_agent": "string",
+    "ai_local_helper": {},
+    "ask_prompts": {},
+    "corners": "string",
+    "cost_currency": "string",
+    "cost_limit": "int",
+    "dictation": "bool",
+    "dictation_engine": "string",
+    "dictation_whisper_model": "string",
+    "flutter_map_layout": {
+     "cards": {
+      "a": [
+       "int|number"
+      ]
+     },
+     "pins": [
+      "string"
+     ]
+    },
+    "flutter_theme_mode": "string",
+    "language": "string",
+    "look": "string",
+    "map_animations": "string",
+    "map_layers": [
+     "string"
+    ],
+    "map_light_fps": "int",
+    "map_scan_interval": "int",
+    "map_scan_pause_unfocused": "bool",
+    "map_scan_targets": [
+     "string"
+    ],
+    "providers_with_agents": "bool",
+    "screenshot_folder": "null|string",
+    "screenshot_key": "bool",
+    "smart_helper": "null|string",
+    "subagents_kept": "int",
+    "subagents_minutes": "int|number",
+    "system_map_columns": [
+     "string"
+    ],
+    "terminal_tabs": "bool",
+    "usage_box": "bool",
+    "usage_box_items": [
+     "string"
+    ],
+    "usage_box_size": "int",
+    "warn_notify": "bool",
+    "warn_red": "int",
+    "warn_yellow": "int",
+    "window_mode": "string"
+   },
+   "source": "manual"
+  },
+  "settings.update": {
+   "area": "settings",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "values": "object"
+   },
+   "result": {
+    "action_rule_hints": "bool",
+    "action_rules": [
+     "object"
+    ],
+    "addons_online": "bool",
+    "agent_folder": "null|string",
+    "ai_checks": "bool",
+    "ai_checks_agent": "string",
+    "ai_local_helper": {},
+    "ask_prompts": {},
+    "corners": "string",
+    "cost_currency": "string",
+    "cost_limit": "int",
+    "dictation": "bool",
+    "dictation_engine": "string",
+    "dictation_whisper_model": "string",
+    "flutter_map_layout": {
+     "cards": {
+      "a": [
+       "int|number"
+      ],
+      "b": [
+       "number"
+      ]
+     },
+     "pins": [
+      "string"
+     ]
+    },
+    "flutter_theme_mode": "string",
+    "language": "string",
+    "look": "string",
+    "map_animations": "string",
+    "map_layers": [
+     "string"
+    ],
+    "map_light_fps": "int",
+    "map_scan_interval": "int",
+    "map_scan_pause_unfocused": "bool",
+    "map_scan_targets": [
+     "string"
+    ],
+    "providers_with_agents": "bool",
+    "screenshot_folder": "null|string",
+    "screenshot_key": "bool",
+    "smart_helper": "null|string",
+    "subagents_kept": "int",
+    "subagents_minutes": "int|number",
+    "system_map_columns": [
+     "string"
+    ],
+    "terminal_tabs": "bool",
+    "usage_box": "bool",
+    "usage_box_items": [
+     "string"
+    ],
+    "usage_box_size": "int",
+    "warn_notify": "bool",
+    "warn_red": "int",
+    "warn_yellow": "int",
+    "window_mode": "string"
+   },
+   "source": "manual"
+  },
+  "setup.apply": {
+   "area": "setup",
+   "kind": "change",
+   "note": "declined: found add-ons left unticked; they count as switched off (addons_off).",
+   "optional": [
+    "declined"
+   ],
+   "params": {
+    "declined": [
+     "string"
+    ],
+    "enabled": [
+     "string"
+    ]
+   },
+   "result": {
+    "addons": [
+     "object"
+    ]
+   },
+   "source": "manual"
+  },
+  "setup.detect": {
+   "area": "setup",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "setup.later": {
+   "area": "setup",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "skills.web_fetch": {
+   "area": "skills",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "skills.web_preview": {
+   "area": "skills",
+   "kind": "preview",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "skills.web_search": {
+   "area": "skills",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "system.cached": {
+   "area": "system",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "system.fix_preview": {
+   "area": "system",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "command": "string",
+    "finding": "string"
+   },
+   "result": null,
+   "source": null
+  },
+  "system.folder_preview": {
+   "area": "system",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "found": "?",
+    "runtime": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "system.forget_disk": {
+   "area": "system",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "node": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "system.help_apply": {
+   "area": "system",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "preview": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "system.help_preview": {
+   "area": "system",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "command": "string",
+    "topic": "string"
+   },
+   "result": null,
+   "source": null
+  },
+  "system.mount_signature": {
+   "area": "system",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "system.move_apply": {
+   "area": "system",
+   "kind": "change",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "system.move_preview": {
+   "area": "system",
+   "kind": "preview",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "system.move_undo": {
+   "area": "system",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "undo": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "system.refresh": {
+   "area": "system",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "search": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "system.stack_apply": {
+   "area": "system",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "preview": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "system.stack_preview": {
+   "area": "system",
+   "kind": "preview",
+   "note": "",
+   "params": {
+    "part": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "system.tool_check": {
+   "area": "system",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "system.view": {
+   "area": "system",
+   "kind": "read",
+   "note": "",
+   "params": {
+    "selected": "?",
+    "transform": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "tasks.cancel": {
+   "area": "tasks",
+   "handle": "task",
+   "kind": "handle",
+   "note": "",
+   "params": {
+    "task": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "tasks.status": {
+   "area": "tasks",
+   "handle": "task",
+   "kind": "handle",
+   "note": "result: the operation's own result. For connections.apply: undo, context_failures, and choice_failures, the local LLMs' own models (Settings › provider_models) the plan moves that were not changed after its files (changed meanwhile, or the settings could not be saved); the Undo of the files is there all the same.",
+   "params": {
+    "task": "string"
+   },
+   "result": {
+    "fraction": "number",
+    "operation": "string",
+    "result": {
+     "choice_failures": "int",
+     "context_failures": "int",
+     "ok": "bool",
+     "undo": "string"
+    },
+    "state": "string",
+    "task": "string",
+    "text": "string"
+   },
+   "source": "manual"
+  },
+  "updates.check": {
+   "area": "updates",
+   "kind": "read",
+   "note": "A task. Its result: updates, each with kind (agent, runtime), key, name, current, available, command, column (agents, providers).",
+   "params": {},
+   "result": {
+    "task": "string"
+   },
+   "source": "manual"
+  },
+  "updates.run": {
+   "area": "updates",
+   "kind": "change",
+   "note": "",
+   "optional": [
+    "running_ok"
+   ],
+   "params": {
+    "key": "string",
+    "running_ok": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "updates.task": {
+   "area": "updates",
+   "kind": "preview",
+   "note": "An update the last updates.check found, as a task for the Ask AI helper (else the one Do it with … uses; not the agent being updated while another can). Applied with system.help_apply.",
+   "params": {
+    "key": "string"
+   },
+   "result": {
+    "name": "string",
+    "preview": "string",
+    "prompt": "string",
+    "topic": "string"
+   },
+   "source": "manual"
+  },
+  "usage.snapshot": {
+   "area": "usage",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  },
+  "window.popup": {
+   "area": "window",
+   "kind": "change",
+   "note": "",
+   "params": {
+    "height": "?",
+    "width": "?"
+   },
+   "result": null,
+   "source": null
+  },
+  "window.rounding": {
+   "area": "window",
+   "kind": "read",
+   "note": "",
+   "params": {},
+   "result": null,
+   "source": null
+  }
+ }
+}

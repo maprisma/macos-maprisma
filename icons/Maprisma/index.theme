@@ -1,0 +1,12 @@
+[Icon Theme]
+Name=Maprisma
+Comment=The icons Maprisma brings along (the rest comes from Adwaita)
+Inherits=Adwaita,hicolor
+Directories=symbolic/actions
+
+[symbolic/actions]
+Context=Actions
+Size=16
+MinSize=8
+MaxSize=512
+Type=Scalable

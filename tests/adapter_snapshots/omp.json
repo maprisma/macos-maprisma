@@ -1,0 +1,128 @@
+{
+ "command": "omp",
+ "name": "Oh My Pi",
+ "label": "omp",
+ "full_name": "Oh My Pi",
+ "icon": "",
+ "icon_font": "omarchy",
+ "spec": "github:can1357/oh-my-pi",
+ "package": "",
+ "package_only": false,
+ "own_install_counts": true,
+ "install_marks": [],
+ "download": null,
+ "short_version": false,
+ "offered": true,
+ "login_status": null,
+ "fixed_provider": "",
+ "self_served": false,
+ "short_model_flag": false,
+ "self_update": [],
+ "install": [
+  {
+   "kind": "mise",
+   "spec": "github:can1357/oh-my-pi",
+   "tool": "",
+   "argv": [],
+   "sudo": false,
+   "packages": [],
+   "url": "",
+   "note": "",
+   "update": []
+  }
+ ],
+ "data": [
+  "~/.omp"
+ ],
+ "homepage": "https://github.com/can1357/oh-my-pi",
+ "ask": [],
+ "games": [],
+ "effort": [],
+ "configure": [
+  {
+   "label": "Setup wizard",
+   "argv": [
+    "omp",
+    "setup"
+   ],
+   "note": "",
+   "window": false
+  }
+ ],
+ "home": "~/.omp",
+ "activity": [
+  "~/.omp/agent/sessions"
+ ],
+ "program_dir": "",
+ "web_search": false,
+ "chat_app": false,
+ "herdr": "",
+ "logout": [],
+ "start": [],
+ "research": [],
+ "research_output": "text",
+ "task": [],
+ "rewrite": [],
+ "advise": [],
+ "closed": [],
+ "tools_setting": [
+  "~/.omp/agent/settings.json",
+  "defaultTools"
+ ],
+ "sandbox_setting": "",
+ "replies": [],
+ "subagents": [],
+ "session_files": "omp-db",
+ "asks_setting": "",
+ "access": null,
+ "security": null,
+ "sessions": {
+  "collect": "agent_sessions.omp_db",
+  "note": "Numbers from Oh My Pi's session database (no text is read). The API value is what the tokens would cost at API prices, not what a plan costs."
+ },
+ "usage": null,
+ "latest": null,
+ "installer": null,
+ "detect": false,
+ "limits": false,
+ "details": true,
+ "models": null,
+ "local_llm": {
+  "files": [
+   "~/.omp/agent/models.yml",
+   "~/.omp/agent/config.yml"
+  ],
+  "added": [
+   "providers:\n  llamacpp:\n    auth: none\n    baseUrl: \"http://127.0.0.1:8080/v1\"\n    api: openai-completions\n    models:\n      - id: \"m1\"\n        name: \"m1\"\n        contextWindow: 8192\n      - id: \"m2\"\n        name: \"m2\"\n",
+   "modelRoles:\n  default: \"llamacpp/m1\"\n"
+  ],
+  "connected": true,
+  "active": true,
+  "removed": [
+   "",
+   ""
+  ]
+ },
+ "skills": {
+  "dirs": [
+   "~/.omp/agent/skills"
+  ],
+  "own": "~/.omp/agent/skills",
+  "settings_list": false,
+  "settings_file": "",
+  "listed": [
+   "~/x/skills"
+  ],
+  "write": null
+ },
+ "mcp": {
+  "path": "~/.omp/agent/mcp.json",
+  "format": "json",
+  "key": "mcpServers",
+  "shape": "omp",
+  "in_app": "",
+  "write": null,
+  "read": null,
+  "native": null
+ }
+}

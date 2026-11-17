@@ -1,0 +1,270 @@
+"""Ask an MCP server which tools (and prompts) it offers, the way an agent
+does: initialize, then tools/list. Only when asked (the Details page), as
+it starts the server's program or talks to its address.
+
+- stdio: the server's command with its args and env (as the agent's own
+  settings have them), in its own process group, stopped afterwards;
+- streamable HTTP: JSON-RPC posts with the entry's headers (plain JSON or
+  an event-stream answer).
+Legacy SSE servers are not asked.
+
+Answers are kept in ~/.cache/maprisma/mcp-tools/<id>.json (the map's id: the
+name, or name~2 for another server of that name), with the digest of the server
+asked (mcp_ctl.identity_hash), so another server under that id never shows them.
+"""
+
+import datetime as dt
+import json
+import os
+import re
+import select
+import subprocess
+import time
+from pathlib import Path
+
+HOME = Path.home()
+CACHE_DIR = HOME / ".cache/maprisma/mcp-tools"
+TIMEOUT = 90                 # npx/uvx may download the server first
+MAX_LINE = 4 * 1024 * 1024
+MAX_TOOLS = 300
+PROTOCOL = "2025-06-18"
+CLIENT = {"name": "maprisma", "version": "1"}
+_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def _params(schema) -> list:
+    """Parameter names of a tool (its inputSchema's properties) or a prompt (its
+    arguments), a few and short: what a skill about the server needs to name."""
+    if isinstance(schema, dict):
+        names = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+    elif isinstance(schema, list):
+        names = [a.get("name") for a in schema if isinstance(a, dict)]
+    else:
+        names = []
+    return [n[:64] for n in names if isinstance(n, str) and _NAME.fullmatch(n[:64])][:40]
+
+
+MAX_CURSOR = 1024         # a page cursor longer than this ends the paging
+
+
+def _result(message: dict) -> dict:
+    """A JSON-RPC answer's result (a dict, else empty), or RuntimeError for its error, whatever
+    shape a server sends them in."""
+    error = message.get("error")
+    if error is not None:
+        text = error.get("message", error) if isinstance(error, dict) else error
+        raise RuntimeError(str(text)[:200])
+    result = message.get("result")
+    return result if isinstance(result, dict) else {}
+
+
+def _clean(items, kind: str) -> list:
+    found = []
+    for item in items if isinstance(items, list) else []:
+        if isinstance(item, dict) and isinstance(item.get("name"), str):
+            text = item.get("description") if isinstance(item.get("description"), str) else ""
+            text = " ".join(text.split())
+            found.append({"name": item["name"][:100], "description": text[:400], "kind": kind,
+                          "params": _params(item.get("inputSchema" if kind == "tool" else "arguments"))})
+    return found[:MAX_TOOLS]
+
+
+# --- stdio ----------------------------------------------------------------------------------------
+
+class _Stdio:
+    def __init__(self, entry: dict):
+        env = {**os.environ, **entry["env"]}
+        self.proc = subprocess.Popen([entry["command"], *entry["args"]], stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=str(HOME),
+                                     env=env, start_new_session=True)
+        self.buffer = b""
+        self.deadline = time.monotonic() + TIMEOUT
+
+    def send(self, message: dict):
+        """Written without blocking under the same deadline as the answers: a server that stops
+        reading its stdin ends the ask with TimeoutError instead of hanging it."""
+        assert self.proc.stdin is not None      # started with stdin=PIPE
+        fd = self.proc.stdin.fileno()
+        os.set_blocking(fd, False)
+        data = memoryview(json.dumps(message).encode() + b"\n")
+        while data:
+            left = self.deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("the server does not read")
+            _r, ready, _x = select.select([], [fd], [], left)
+            if not ready:
+                continue
+            try:
+                data = data[os.write(fd, data):]
+            except BlockingIOError:
+                continue
+
+    def answer(self, wanted: int) -> dict:
+        while True:
+            while b"\n" in self.buffer:
+                line, self.buffer = self.buffer.split(b"\n", 1)
+                try:
+                    message = json.loads(line)
+                except ValueError:
+                    continue            # a server printing other things on stdout
+                if isinstance(message, dict) and message.get("id") == wanted:
+                    return _result(message)
+            left = self.deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError("no answer")
+            assert self.proc.stdout is not None     # started with stdout=PIPE
+            ready, _w, _x = select.select([self.proc.stdout], [], [], left)
+            if not ready:
+                continue
+            chunk = os.read(self.proc.stdout.fileno(), 65536)
+            if not chunk:
+                raise RuntimeError("the server stopped")
+            self.buffer += chunk
+            if len(self.buffer) > MAX_LINE:
+                raise RuntimeError("answer too large")
+
+    def close(self):
+        """The server and everything it started: SIGTERM to its group, a short grace, SIGKILL to
+        whatever is left, also when the server itself ended first; the server is reaped."""
+        import process_group
+        process_group.end_child(self.proc)
+        for pipe in (self.proc.stdin, self.proc.stdout):
+            try:
+                if pipe is not None:
+                    pipe.close()
+            except OSError:
+                pass
+
+
+# --- streamable HTTP -------------------------------------------------------------------------------
+
+class _Http:
+    """Streamable HTTP through netfetch: bounded, headers (keys) on curl's stdin."""
+    def __init__(self, entry: dict):
+        self.url = entry["url"]
+        self.headers = {**entry["headers"], "Content-Type": "application/json",
+                        "Accept": "application/json, text/event-stream"}
+        self.session = None
+        self.results = {}
+
+    def send(self, message: dict):
+        import netfetch
+        headers = dict(self.headers)
+        if self.session:
+            headers["Mcp-Session-Id"] = self.session
+        try:
+            raw = netfetch.fetch(self.url, max_bytes=MAX_LINE, timeout=30, user_url=True, include=True,
+                                 headers=headers, data=json.dumps(message).encode(), method="POST")
+        except netfetch.FetchError as error:
+            raise RuntimeError(str(error)) from error
+        text = raw.decode("utf-8", "replace")
+        # Headers of the last response (a "100 Continue" may come first), then the body.
+        head, body = "", text
+        while body.startswith("HTTP/"):
+            found = re.match(r"(.*?)\r?\n\r?\n", body, re.DOTALL)
+            if not found:
+                break
+            head, body = found.group(1), body[found.end():]
+            if not re.match(r"HTTP/\S+ 100\b", head):
+                break
+        session = re.search(r"^mcp-session-id:\s*([!-~]{1,200})\s*$", head, re.MULTILINE | re.IGNORECASE)
+        if session:
+            self.session = session.group(1)
+        kind = re.search(r"^content-type:\s*(\S+)", head, re.MULTILINE | re.IGNORECASE)
+        if "id" not in message:
+            return
+        texts = [line[5:].strip() for line in body.splitlines() if line.startswith("data:")] \
+            if kind and "event-stream" in kind.group(1) else [body]
+        for item in texts:
+            try:
+                answer = json.loads(item)
+            except ValueError:
+                continue
+            if isinstance(answer, dict) and answer.get("id") == message["id"]:
+                self.results[message["id"]] = answer
+
+    def answer(self, wanted: int) -> dict:
+        message = self.results.get(wanted)
+        if message is None:
+            raise RuntimeError("no answer")
+        return _result(message)
+
+    def close(self):
+        pass
+
+
+# --- asking -------------------------------------------------------------------------------------
+
+def ask(entry: dict) -> dict:
+    """{"tools": [...], "prompts": [...], "server": "name version"} from a
+    server (mcp_ctl.normal entry). Raises on any failure."""
+    if entry["transport"] == "sse":
+        raise RuntimeError("an SSE server: not asked")
+    link = _Stdio(entry) if entry["transport"] == "stdio" else _Http(entry)
+    try:
+        link.send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                   "params": {"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": CLIENT}})
+        hello = link.answer(1)
+        link.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        tools, cursor, number = [], None, 2
+        while True:
+            link.send({"jsonrpc": "2.0", "id": number, "method": "tools/list",
+                       "params": {"cursor": cursor} if cursor else {}})
+            page = link.answer(number)
+            tools += _clean(page.get("tools"), "tool")
+            cursor = page.get("nextCursor")
+            if not isinstance(cursor, str) or len(cursor) > MAX_CURSOR:
+                cursor = None           # an odd or huge cursor: the pages so far are enough
+            number += 1
+            if not cursor or len(tools) >= MAX_TOOLS or number > 20:
+                break
+        prompts = []
+        if isinstance(hello.get("capabilities"), dict) and "prompts" in hello["capabilities"]:
+            link.send({"jsonrpc": "2.0", "id": 99, "method": "prompts/list", "params": {}})
+            try:
+                prompts = _clean(link.answer(99).get("prompts"), "prompt")
+            except (RuntimeError, TimeoutError):
+                prompts = []
+        info = hello.get("serverInfo") if isinstance(hello.get("serverInfo"), dict) else {}
+        server = " ".join(str(info.get(k, ""))[:60] for k in ("name", "version")).strip()
+        return {"tools": tools, "prompts": prompts, "server": server}
+    finally:
+        link.close()
+
+
+def cache_file(name: str) -> Path:
+    import mcp_ctl
+    if not mcp_ctl.LIBRARY_KEY_RE.fullmatch(name):          # all of it: match's $ lets a trailing newline through
+        raise ValueError(name)
+    return CACHE_DIR / f"{name}.json"
+
+
+def cached(name: str, identity: str | None = None) -> dict | None:
+    """With identity, only an answer of that server. One kept before answers carried
+    it tells nothing of its server: it counts as none (left on disk) until asked again."""
+    try:
+        data = json.loads(cache_file(name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    kept = data.pop("identity", None)
+    if identity is not None and kept != identity:
+        return None
+    return data
+
+
+def ask_and_keep(name: str, entry: dict, identity: str = "") -> dict:
+    """ask() and keep the answer (or the error) with the time, and with identity when given."""
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    try:
+        result = {"status": "ok", "checked": now, **ask(entry)}
+    except Exception as error:          # any odd server: a failed ask, never a dead worker
+        result = {"status": "failed", "checked": now, "error": str(error)[:300]}
+    import ai_core
+    try:
+        kept = {**result, "identity": identity} if identity else result
+        ai_core.atomic_write(cache_file(name), json.dumps(kept, ensure_ascii=False, indent=1))   # 0600, no links followed
+    except (OSError, ValueError):
+        pass
+    return result

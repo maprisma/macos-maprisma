@@ -1,0 +1,287 @@
+import shlex
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import desktop  # noqa: E402
+import desktop_generic as g  # noqa: E402
+import desktop_omarchy  # noqa: E402
+
+
+class DetectTest(unittest.TestCase):
+    def test_override_and_omarchy_folder(self):
+        self.assertEqual(desktop.detect({"MAPRISMA_DESKTOP": "generic"}), "generic")
+        self.assertEqual(desktop.detect({"MAPRISMA_DESKTOP": "omarchy", "OMARCHY_PATH": "/nowhere"}), "omarchy")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(desktop.detect({"OMARCHY_PATH": tmp}), "omarchy")
+        self.assertEqual(desktop.detect({"OMARCHY_PATH": "/nowhere/omarchy"}), "generic")
+        self.assertEqual(desktop.detect({"MAPRISMA_DESKTOP": "kde", "OMARCHY_PATH": "/nowhere"}), "generic")
+
+    def test_omarchy_installed_but_another_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for session in ("COSMIC", "KDE", "GNOME:Plasma"):
+                self.assertEqual(desktop.detect({"OMARCHY_PATH": tmp, "XDG_CURRENT_DESKTOP": session}), "generic")
+            for session in ("Hyprland", "hyprland:omarchy", ""):
+                self.assertEqual(desktop.detect({"OMARCHY_PATH": tmp, "XDG_CURRENT_DESKTOP": session}), "omarchy")
+            self.assertEqual(desktop.detect({"OMARCHY_PATH": tmp, "XDG_CURRENT_DESKTOP": "KDE",
+                                             "MAPRISMA_DESKTOP": "omarchy"}), "omarchy")
+
+    def test_both_implement_the_whole_interface(self):
+        names = [line.split()[0].split("(")[0] for line in desktop.__doc__.split("The interface")[1].splitlines()
+                 if line.startswith("    ") and line.split()[0][0].islower() and "(" in line.split()[0]
+                 and line.split()[0].split("(")[0] not in ("app_name", "app_id", "config_dir", "launcher_entry")]
+        self.assertGreaterEqual(len(names), 20)
+        for module in (desktop_omarchy, g):
+            missing = [n for n in names if not hasattr(module, n)]
+            self.assertEqual(missing, [], module.__name__)
+
+
+class GenericTest(unittest.TestCase):
+    def test_config_folder_is_maprisma(self):
+        self.assertEqual(desktop.config_dir().name, "maprisma")
+
+    def test_theme_from_the_style_manager(self):
+        with mock.patch.object(g, "_adw_style", return_value=(True, "#9141ac")):
+            colors = g.theme_colors()
+        self.assertEqual((colors["background"], colors["accent"]), (g.DARK["background"], "#9141ac"))
+
+    def test_theme_follows_style_and_accent(self):
+        """Without a display (no style manager): gsettings."""
+        answers = {"color-scheme": "prefer-dark", "accent-color": "purple"}
+        with mock.patch.object(g, "_adw_style", return_value=None), \
+                mock.patch.object(g, "_gsetting", side_effect=lambda key: answers.get(key, "")):
+            dark = g.theme_colors()
+        self.assertEqual(dark["background"], g.DARK["background"])
+        self.assertEqual(dark["accent"], g.ACCENTS["purple"])
+        with mock.patch.object(g, "_adw_style", return_value=None), mock.patch.object(g, "_gsetting", return_value=""):
+            light = g.theme_colors()
+        self.assertEqual((light["background"], light["accent"]), (g.LIGHT["background"], g.ACCENTS["blue"]))
+
+    def test_desktop_palette_of_the_sister_apps(self):
+        """desktop_palette.dart's reference: Maprisma Shell, Plasma, COSMIC; nothing elsewhere."""
+        with tempfile.TemporaryDirectory() as home:
+            env = lambda d: {"HOME": home, "XDG_CURRENT_DESKTOP": d}  # noqa: E731
+            scheme = Path(home, ".local/state/maprisma-shell/scheme.json")
+            scheme.parent.mkdir(parents=True)
+            scheme.write_text('{"colours":{"primary":"E78A4E","surface":"231a13","onSurface":"e8d5b7","error":"zzz"}}')
+            self.assertEqual(g.desktop_palette(env("Hyprland")),
+                             {"accent": "#e78a4e", "background": "#231a13", "foreground": "#e8d5b7"})
+            scheme.write_text("not json")
+            self.assertEqual(g.desktop_palette(env("Hyprland")), {})
+            Path(home, ".config").mkdir()
+            Path(home, ".config/kdeglobals").write_text(
+                "[Colors:Window]\nBackgroundNormal=239,240,241\nForegroundNormal=35,38,41\n"
+                "[Colors:Selection]\nBackgroundNormal=61,174,233\n[General]\nAccentColor=300,1,1\n")
+            self.assertEqual(g.desktop_palette(env("KDE")), {"accent": "#3daee9", "background": "#eff0f1",
+                                                             "foreground": "#232629", "selection": "#3daee9"})
+            cosmic = Path(home, ".config/cosmic")
+            (cosmic / "com.system76.CosmicTheme.Mode/v1").mkdir(parents=True)
+            (cosmic / "com.system76.CosmicTheme.Mode/v1/is_dark").write_text("false")
+            light = cosmic / "com.system76.CosmicTheme.Light/v1"
+            light.mkdir(parents=True)
+            (light / "accent").write_text("(base: (red: 1.0, green: 0.5, blue: 0.0, alpha: 1.0), hover: (red: 0.0))")
+            (light / "background").write_text("(base: (red: 0.98, green: 0.98, blue: 0.98, alpha: 1.0), "
+                                              "on: (red: 0.1, green: 0.1, blue: 0.1, alpha: 1.0))")
+            for key in ("success", "warning", "destructive"):
+                (light / key).write_text("(base: (red: 0.0, green: 0.0, blue: 0.0, alpha: 1.0))")
+            t = g.desktop_palette(env("COSMIC"))
+            self.assertEqual((t["accent"], t["background"], t["foreground"]), ("#ff8000", "#fafafa", "#1a1a1a"))
+            # COSMIC 1.x: the theme in v2 wins over a stale v1.
+            (cosmic / "com.system76.CosmicTheme.Light/v2").mkdir(parents=True)
+            (cosmic / "com.system76.CosmicTheme.Light/v2/accent").write_text(
+                "(base: (red: 0.0, green: 0.5, blue: 1.0, alpha: 1.0))")
+            self.assertEqual(g.desktop_palette(env("COSMIC"))["accent"], "#0080ff")
+            # as COSMIC 1.0 writes v2: colours as "#RRGGBBAA" strings
+            (cosmic / "com.system76.CosmicTheme.Light/v2/accent").write_text(
+                '(\n    base: "#4DD6C8FF",\n    on: "#000000FF",\n)')
+            (cosmic / "com.system76.CosmicTheme.Light/v2/background").write_text(
+                '(\n    base: "#1A2234FF",\n    component: (\n        on: "#000000FF",\n    ),\n    on: "#CDD6EEFF",\n)')
+            t = g.desktop_palette(env("COSMIC"))
+            self.assertEqual((t["accent"], t["background"], t["foreground"]), ("#4dd6c8", "#1a2234", "#cdd6ee"))
+            self.assertEqual(g.desktop_palette(env("GNOME")), {})
+
+    def test_desktop_fonts_of_cosmic_and_plasma(self):
+        """desktop_palette.dart desktopFonts' reference: CosmicTk's RON families (v2 first), kdeglobals' first field."""
+        with tempfile.TemporaryDirectory() as home:
+            env = lambda d: {"HOME": home, "XDG_CURRENT_DESKTOP": d, "PATH": ""}  # noqa: E731
+            fonts = lambda d: g.desktop_fonts(env(d), system_root=home + "/none")  # noqa: E731
+            self.assertEqual(fonts("COSMIC"), {})
+            tk = Path(home, ".config/cosmic/com.system76.CosmicTk/v1")
+            tk.mkdir(parents=True)
+            (tk / "interface_font").write_text('(\n    family: "Open Sans",\n    weight: Normal,\n)')
+            (tk / "monospace_font").write_text('(\n    family: "Hack",\n    weight: Normal,\n)')
+            self.assertEqual(fonts("COSMIC"), {"ui": "Open Sans", "mono": "Hack"})
+            Path(home, ".config/cosmic/com.system76.CosmicTk/v2").mkdir()
+            Path(home, ".config/cosmic/com.system76.CosmicTk/v2/interface_font").write_text('(family: "Inter")')
+            self.assertEqual(fonts("COSMIC"), {"ui": "Inter", "mono": "Hack"})
+            self.assertEqual(fonts("KDE"), {})
+            Path(home, ".config/kdeglobals").write_text(
+                "[General]\nfixed=Hack,10,-1,5,400,0,0,0,0,0\nfont=Noto Sans,10,-1,5,400,0,0,0,0,0\n")
+            self.assertEqual(fonts("KDE"), {"ui": "Noto Sans", "mono": "Hack"})
+            Path(home, ".config/kdeglobals").write_text("[General]\nfont= ,10\nfixed=" + "x" * 101 + "\n")
+            self.assertEqual(fonts("KDE"), {})
+
+    def test_desktop_fonts_elsewhere_from_gsettings(self):
+        """Hyprland, GNOME: gsettings without the size, asked at most every 30 s; without it none."""
+        with tempfile.TemporaryDirectory() as home:
+            bin_dir = Path(home, "bin")
+            bin_dir.mkdir()
+            log = Path(home, "gs.log")
+            fake = bin_dir / "gsettings"
+            fake.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\ncase "$3" in font-name) echo "\'Noto Sans  10\'";; '
+                            "monospace-font-name) echo \"'Hack, 10.5'\";; esac\n")
+            fake.chmod(0o755)
+            env = {"HOME": home, "XDG_CURRENT_DESKTOP": "Hyprland", "PATH": str(bin_dir)}
+            with mock.patch.dict(g._gtk_font_cache, clear=True):
+                self.assertEqual(g.desktop_fonts(env), {"ui": "Noto Sans", "mono": "Hack"})
+                self.assertEqual(g.desktop_fonts(env), {"ui": "Noto Sans", "mono": "Hack"})
+                self.assertEqual(len(log.read_text().splitlines()), 2)
+            self.assertEqual(g.desktop_fonts({"HOME": home, "XDG_CURRENT_DESKTOP": "GNOME", "PATH": home + "/none"}), {})
+        self.assertEqual(g.pango_family("JetBrains Mono Nerd Font 12"), "JetBrains Mono Nerd Font")
+        self.assertEqual(g.pango_family("Hack"), "Hack")
+
+    def test_terminal_choice(self):
+        found = {"cosmic-term": "/usr/bin/cosmic-term", "xterm": "/usr/bin/xterm"}     # COSMIC's own
+        with mock.patch.object(g.shutil, "which", side_effect=found.get), mock.patch.dict(g.os.environ, {"TERMINAL": ""}):
+            self.assertEqual(g.terminal(), ["/usr/bin/cosmic-term", "--"])
+        found = {"konsole": "/usr/bin/konsole", "xterm": "/usr/bin/xterm"}
+        with mock.patch.object(g.shutil, "which", side_effect=found.get), mock.patch.dict(g.os.environ, {"TERMINAL": ""}):
+            self.assertEqual(g.terminal(), ["/usr/bin/konsole", "-e"])
+        with mock.patch.object(g.shutil, "which", side_effect=lambda n: "/usr/bin/" + n if n in ("foot", "kitty") else None), \
+                mock.patch.dict(g.os.environ, {"TERMINAL": "kitty"}):
+            self.assertEqual(g.terminal(), ["/usr/bin/kitty"])
+        with mock.patch.object(g.shutil, "which", return_value=None):
+            self.assertIsNone(g.terminal())
+            self.assertFalse(g.open_terminal(["x"], "/"))
+
+    def test_run_in_terminal_quotes_every_word(self):
+        with mock.patch.object(g, "terminal", return_value=["/usr/bin/kgx", "--"]), \
+                mock.patch.object(g.subprocess, "Popen") as popen:
+            self.assertTrue(g.run_in_terminal(["mise", "upgrade", "http:muse"], {"MISE_USE_VERSIONS_HOST": "0"}))
+        argv = popen.call_args[0][0]
+        self.assertEqual(argv[:4], ["/usr/bin/kgx", "--", "bash", "-c"])
+        self.assertTrue(argv[4].startswith("env MISE_USE_VERSIONS_HOST=0 mise upgrade http:muse; "))
+        self.assertEqual(shlex.split(argv[4].split(";")[0]), ["env", "MISE_USE_VERSIONS_HOST=0", "mise", "upgrade", "http:muse"])
+
+    def test_omarchy_floating_terminal_quotes_every_word(self):
+        """The floating terminal runs its argument through bash: no word may become shell syntax."""
+        hostile = ["agent", "x; touch /tmp/pwned", "$(id)", "`id`", "a b", "'q'", "\n"]
+        with mock.patch.object(desktop_omarchy.shutil, "which", return_value="/usr/bin/float"), \
+                mock.patch.object(desktop_omarchy.subprocess, "Popen") as popen:
+            self.assertTrue(desktop_omarchy.run_in_terminal(hostile, {"K": "v w"}))
+            self.assertEqual(shlex.split(popen.call_args[0][0][1]), ["env", "K=v w", *hostile])
+            self.assertTrue(desktop_omarchy.run_steps_in_terminal([hostile, ["b", "&&", "c"]]))
+            line = popen.call_args[0][0][1]
+            self.assertEqual([shlex.split(part) for part in line.split(" && ")], [hostile, ["b", "&&", "c"]])
+
+    def test_install_command_per_package_manager(self):
+        for manager, expected in (("apt", "sudo apt install gir1.2-vte-3.91"), ("dnf", "sudo dnf install vte291-gtk4"),
+                                  ("zypper", "sudo zypper install typelib-1_0-Vte-3_91"), ("pacman", "sudo pacman -S vte4")):
+            with mock.patch.object(g, "package_manager", return_value=manager):
+                self.assertEqual(g.install_command("vte4"), expected)
+        with mock.patch.object(g, "package_manager", return_value="apt"):
+            self.assertEqual(g.install_command("xdg-terminal-exec"), "")
+        with mock.patch.object(g, "package_manager", return_value=""):
+            self.assertEqual(g.install_command("vte4"), "")
+
+    def test_windows_without_an_attached_window(self):
+        with mock.patch.object(g, "_window", None), mock.patch.object(g, "_hyprland", return_value=None):
+            self.assertFalse(g.maximize("x"))
+            self.assertIsNone(g.is_maximized("x"))
+
+    def test_hyprland_session_asks_the_compositor(self):
+        # Hyprland ignores the window's own maximize request and calls every tile maximized.
+        hypr = mock.Mock(maximize=mock.Mock(return_value=True), is_maximized=mock.Mock(return_value=False))
+        window = mock.Mock(is_maximized=mock.Mock(return_value=True))
+        with mock.patch.object(g, "_window", window), mock.patch.object(g, "_hyprland", return_value=hypr):
+            self.assertTrue(g.maximize("x"))
+            self.assertFalse(g.is_maximized("x"))           # the compositor's state, not GTK's
+        hypr.maximize.assert_called_once_with("x")
+        window.maximize.assert_not_called()
+
+    def test_like_windows_follows_hyprland_rounding(self):
+        # On Hyprland the windows' corners are its rounding (Omarchy: square), not libadwaita's.
+        for rounding, expected in ((0, 0), (8, 8), (None, g.RADIUS)):
+            hypr = mock.Mock(window_rounding=mock.Mock(return_value=rounding))
+            with mock.patch.object(g, "_hyprland", return_value=hypr):
+                self.assertEqual(g.window_rounding(), expected)
+        with mock.patch.object(g, "_hyprland", return_value=None):
+            self.assertEqual(g.window_rounding(), g.RADIUS)
+            self.assertEqual(g.rounding_source(), "desktop")
+
+    def test_hyprland_only_when_its_session_runs(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            self.assertIsNone(g._hyprland())
+
+    def test_no_usage_records_and_built_in_agents(self):
+        import agents
+        catalog = g.agent_catalog()
+        self.assertEqual([c for c, *_rest in catalog], [c for c, *_rest in agents.FALLBACK])
+        self.assertFalse([c for c, _l, _i, font in catalog if font == "omarchy"])
+        self.assertEqual(g.default_agent(), "")
+
+    def test_usage_records_only_where_omarchy_keeps_them(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(g, "OMARCHY_USAGE", Path(tmp) / "omarchy/agents/usage"), \
+                    mock.patch.object(g, "usage_collector", return_value=None), \
+                    mock.patch.object(g.subprocess, "run") as run:
+                self.assertIsNone(g.usage_dir())                  # no records yet
+                self.assertFalse(g.refresh_usage("claude"))
+                run.assert_not_called()
+                (Path(tmp) / "omarchy/agents/usage").mkdir(parents=True)
+                self.assertEqual(g.usage_dir(), Path(tmp) / "omarchy/agents/usage")   # this PC runs Omarchy too
+            # Validate the real lookup's input guard, independently of installed collectors.
+            self.assertFalse(g.has_usage_collector("../x"))
+
+    def test_usage_collector_can_create_records_on_another_desktop(self):
+        # A collector on PATH works without an existing Omarchy usage directory.
+        with tempfile.TemporaryDirectory() as tmp:
+            usage = Path(tmp) / "omarchy/agents/usage"
+            with mock.patch.object(g, "OMARCHY_USAGE", usage), \
+                    mock.patch.dict(g.os.environ, {"OMARCHY_PATH": ""}), \
+                    mock.patch.object(g, "usage_collector", return_value="/fake/bin/omarchy-agent-usage-claude"), \
+                    mock.patch.object(g.subprocess, "run", return_value=mock.Mock(returncode=0, stdout=b'{}')) as run:
+                self.assertIsNone(g.usage_dir())
+                self.assertTrue(g.refresh_usage("claude"))
+                self.assertEqual(run.call_args.args[0], ["/fake/bin/omarchy-agent-usage-claude"])
+                self.assertEqual(g.usage_dir(), usage)
+                self.assertEqual((usage / "claude.json").read_text(), "{}\n")
+
+
+class LookTest(unittest.TestCase):
+    """Settings › Look: Omarchy's theme (default) or GNOME's Adwaita, on Omarchy only."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.settings = Path(folder.name) / "settings.json"
+
+    def test_default_and_values(self):
+        import ai_core
+        with mock.patch.object(desktop, "current", return_value=desktop_omarchy):
+            self.assertEqual(ai_core.saved_look(self.settings), "omarchy")
+            self.settings.write_text('{"look": "adwaita"}')
+            self.assertEqual(ai_core.saved_look(self.settings), "adwaita")
+            self.settings.write_text('{"look": "../x"}')
+            self.assertEqual(ai_core.saved_look(self.settings), "omarchy")
+        with mock.patch.object(desktop, "current", return_value=g):
+            self.assertEqual(ai_core.saved_look(self.settings), "adwaita")
+
+    def test_colours_follow_the_look(self):
+        import ai_core
+        with mock.patch.object(desktop, "current", return_value=desktop_omarchy), \
+                mock.patch.object(desktop_omarchy, "theme_colors", return_value={"accent": "#ff8800"}), \
+                mock.patch.object(g, "theme_colors", return_value={"accent": "#3584e4"}):
+            with mock.patch.object(ai_core, "saved_look", return_value="omarchy"):
+                self.assertEqual(ai_core.look_colors()["accent"], "#ff8800")
+            with mock.patch.object(ai_core, "saved_look", return_value="adwaita"):
+                self.assertEqual(ai_core.look_colors()["accent"], "#3584e4")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,610 @@
+import 'dart:async' show FutureOr;
+import 'dart:math' as math;
+
+import 'package:flutter/gestures.dart' show GestureBinding, PointerScrollEvent;
+import 'package:flutter/material.dart';
+import 'core_client.g.dart';
+import 'map_3d.dart';
+import 'map_groups.dart';
+import 'app_theme.dart' show corners;
+import 'map_editor.dart';
+import 'map_smart_card.dart';
+import 'map_zoom.dart';
+
+export 'map_groups.dart' show AgentBadge, NoBatteryHint, UsageBoxLabel;
+
+class AgentMap extends StatelessWidget {
+  const AgentMap({
+    this.layers,
+    this.onLayers,
+    super.key,
+    required this.graph,
+    required this.onAgent,
+    required this.tr,
+    this.onEdit,
+    this.selection,
+    this.controls,
+    this.staticState,
+    this.savedLayout = const {},
+    this.onLayout,
+    this.animate = 'all',
+    this.lightFps = 20,
+    this.onSubagents,
+    this.onNode,
+    this.controller,
+    this.onViewChanged,
+    this.focusedNode,
+    this.groups,
+    this.onExpandGroup,
+    this.onAdd,
+    this.onMissing,
+    this.onNodeMenu,
+    this.onNodeUpdate,
+    this.smartCards = false,
+    this.smartAskColumns,
+    this.onSmartProvider,
+    this.onSmartTask,
+    this.smartHelpers = const [],
+    this.client,
+    this.onSmartApplied,
+    this.smartStatus,
+    this.smartStatusTarget,
+    this.columns = const [
+      'MCP servers and skills',
+      'Agents',
+      'Providers',
+      'Models',
+    ],
+  });
+
+  final Object? staticState;
+  final bool smartCards;
+  final Set<String>? smartAskColumns;
+  final void Function(String step, String key, String name)? onSmartProvider;
+  final ValueChanged<Map<String, dynamic>>? onSmartTask;
+  final List<Map<String, dynamic>> smartHelpers;
+  final CoreClient? client;
+  final ValueChanged<Map<String, dynamic>>? onSmartApplied;
+  final SmartStatusData? smartStatus;
+  final (int, String)? smartStatusTarget;
+  final Set<String>? selection;
+  final Widget Function(Map<String, dynamic>)? controls;
+  final Future<void> Function(Map<String, dynamic>)? onEdit;
+  final Map<String, dynamic> savedLayout;
+  final ValueChanged<Map<String, dynamic>>? onLayout;
+  final String animate;
+  final int lightFps;
+  final Map<String, dynamic> graph;
+  final ValueChanged<String> onAgent;
+  final String Function(String) tr;
+  final ValueChanged<String>? onSubagents;
+  final ValueChanged<Map<String, dynamic>>? onNode;
+  final List<String> columns;
+  final TransformationController? controller;
+  final VoidCallback? onViewChanged;
+  final String? focusedNode;
+  final List<MapGroup>? groups;
+  final ValueChanged<int>? onExpandGroup;
+  final void Function(String kind, String target)? onAdd;
+  final void Function(BuildContext, String action, Map<String, dynamic>)?
+  onMissing;
+  final void Function(BuildContext, Map<String, dynamic>)? onNodeMenu;
+
+  /// A box's update item (task 068), see MapEditor.onUpdate.
+  final void Function(Map<String, dynamic> node, String action)? onNodeUpdate;
+  final List<String>? layers;
+  final FutureOr<void> Function(List<String>)? onLayers;
+
+  Widget _title(Map<String, dynamic> node) {
+    final command = (node['id'] as String).replaceFirst('agent:', '');
+    final activity = (graph['activity'] as Map?)?[command] as Map?;
+    final children = activity?['children'] as List? ?? [];
+    return Row(
+      children: [
+        // The name, the usage text centred after it; the battery and the
+        // buttons stay at the right edge.
+        Expanded(
+          child: CardTitle(
+            name: Text(
+              tr(node['label'] as String),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            usage: switch ((graph['usage_boxes'] as Map?)?[node['id']]) {
+              final Map box => UsageBoxLabel(
+                box: box,
+                size: (graph['usage_box_size'] as int? ?? 7).toDouble(),
+              ),
+              _ => null,
+            },
+          ),
+        ),
+        if ((graph['update_badges'] as Map?)?[node['id']]
+            case final List updates when updates.isNotEmpty)
+          UpdateBadge(updates: updates, tr: tr),
+        if ((graph['agent_badges'] as Map?)?[node['id']] case final Map badge)
+          AgentBadge(badge: badge)
+        else if (onlineAgent(node))
+          NoBatteryHint(
+            message: tr(
+              '{0} reports no plan limits Maprisma can read, so there is no battery.',
+            ).replaceAll('{0}', tr(node['label'] as String)),
+          ),
+        if (node['kind'] == 'agent' &&
+            activity?['subagents_supported'] == true &&
+            children.isNotEmpty)
+          Tooltip(
+            message:
+                '${tr('Subagents')}: ${activity?['active_subagents']} / ${children.length}',
+            child: TextButton(
+              onPressed: onSubagents == null
+                  ? null
+                  : () => onSubagents!(command),
+              style: TextButton.styleFrom(
+                minimumSize: const Size(34, 22),
+                padding: EdgeInsets.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.account_tree_outlined, size: 14),
+                  Text(
+                    '${children.length}',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (onEdit != null) {
+      return MapEditor(
+        layers: layers,
+        onLayers: onLayers,
+        graph: graph,
+        saved: savedLayout,
+        onLayout: onLayout,
+        onEdit: onEdit!,
+        selection: selection,
+        controls: controls,
+        staticState: staticState,
+        onSubagents: onSubagents,
+        tr: tr,
+        controller: controller,
+        groups: this.groups,
+        onExpandGroup: onExpandGroup,
+        onAdd: onAdd,
+        onMissing: onMissing,
+        onOpen: onNode,
+        onMenu: onNodeMenu,
+        onUpdate: onNodeUpdate,
+        animate: animate,
+        lightFps: lightFps,
+        smartCards: smartCards,
+        smartAskColumns: smartAskColumns,
+        onSmartProvider: onSmartProvider,
+        onSmartTask: onSmartTask,
+        smartHelpers: smartHelpers,
+        client: client,
+        onSmartApplied: onSmartApplied,
+        smartStatus: smartStatus,
+        smartStatusTarget: smartStatusTarget,
+      );
+    }
+    final groups = this.groups;
+    final allNodes = (graph['nodes'] as List).cast<Map<String, dynamic>>();
+    final allEdges = (graph['edges'] as List).cast<Map<String, dynamic>>();
+    final shownCols = [for (var i = 0; i < columns.length; i++) i];
+    final nodes = [
+      for (final n in allNodes)
+        if (shownCols.contains(n['column'] as int)) n,
+    ];
+    final shownNodeIds = {for (final n in nodes) n['id']};
+    final edges = [
+      for (final e in allEdges)
+        if (shownNodeIds.contains(e['source']) &&
+            shownNodeIds.contains(e['target']))
+          e,
+    ];
+    final counts = <int, int>{};
+    for (final node in nodes) {
+      final col = node['column'] as int;
+      counts[col] = (counts[col] ?? 0) + 1;
+    }
+    final startTop = groups == null ? 64.0 : (smartCards ? 156.0 : 106.0);
+    final height = math
+        .max(
+          650,
+          (counts.values.fold<int>(0, math.max) * 106) +
+              (groups == null ? 170 : (smartCards ? 220 : 210)),
+        )
+        .toDouble();
+    final colors = Theme.of(context).colorScheme;
+    final threeD = map3dEnabled(savedLayout);
+
+    Widget buildCanvas({
+      required double colWidth,
+      required double colGap,
+      required double boxWidth,
+      required double inset,
+      required Size canvasSize,
+    }) {
+      final step = colWidth + colGap;
+      double colLeft(int col) {
+        final slot = shownCols.indexOf(col);
+        return inset + 24 + (slot < 0 ? col : slot) * step;
+      }
+
+      final positions = <String, Offset>{};
+      final rowCounts = <int, int>{};
+      for (final node in nodes) {
+        final col = node['column'] as int;
+        final row = rowCounts[col] ?? 0;
+        positions[node['id'] as String] = Offset(
+          colLeft(col),
+          startTop + row * 106,
+        );
+        rowCounts[col] = row + 1;
+      }
+      return SizedBox(
+        width: canvasSize.width,
+        height: canvasSize.height,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: CustomPaint(
+                painter: _Connections(
+                  positions,
+                  edges,
+                  colors.outlineVariant,
+                  colors: colors,
+                  boxWidth: boxWidth,
+                  threeD: threeD,
+                ),
+              ),
+            ),
+            for (final col in shownCols)
+              Positioned(
+                left: colLeft(col),
+                top: groups == null ? 16 : 8,
+                width: colWidth,
+                height: groups == null ? 40 : 86,
+                child: groups == null
+                    ? Text(
+                        tr(columns[col]),
+                        style: TextStyle(
+                          color: colors.onSurfaceVariant,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      )
+                    : MapGroupCard(
+                        group: groups[col],
+                        tr: tr,
+                        threeD: threeD,
+                        onExpand: () => onExpandGroup?.call(col),
+                      ),
+              ),
+            for (final node in nodes)
+              Positioned(
+                left: positions[node['id']]!.dx,
+                top: positions[node['id']]!.dy,
+                width: boxWidth,
+                height: 88,
+                child: Semantics(
+                  button: onNode != null || node['kind'] == 'agent',
+                  label: node['label'] as String,
+                  child: Map3dBlock(
+                    enabled: threeD,
+                    radius: corners(context),
+                    inset: 4.0,
+                    faceColor: node['dim'] == true
+                        ? colors.surfaceContainerLowest
+                        : node['status'] == 'running'
+                        ? colors.secondaryContainer
+                        : node['status'] == 'missing'
+                        ? colors.surfaceContainerLowest
+                        : colors.surfaceContainer,
+                    depth: map3dColumnDepth(node['column'] as int? ?? 1),
+                    accent: focusedNode == node['id']
+                        ? colors.primary
+                        : node['status'] == 'running'
+                        ? colors.secondary
+                        : null,
+                    elevated:
+                        focusedNode == node['id'] ||
+                        node['status'] == 'running',
+                    dimmed: node['dim'] == true || node['status'] == 'missing',
+                    child: Card(
+                      shape: focusedNode == node['id']
+                          ? RoundedRectangleBorder(
+                              side: BorderSide(color: colors.primary, width: 2),
+                              borderRadius: BorderRadius.circular(
+                                corners(context),
+                              ),
+                            )
+                          : null,
+                      color: node['dim'] == true
+                          ? colors.surfaceContainerLowest
+                          : node['status'] == 'running'
+                          ? colors.secondaryContainer
+                          : node['status'] == 'missing'
+                          ? colors.surfaceContainerLowest
+                          : colors.surfaceContainer,
+                      clipBehavior: Clip.antiAlias,
+                      child: InkWell(
+                        onSecondaryTap: onNodeMenu == null
+                            ? null
+                            : () => onNodeMenu!(context, node),
+                        onTap: onNode != null
+                            ? () => onNode!(node)
+                            : node['kind'] == 'agent'
+                            ? () => onAgent(
+                                (node['id'] as String).substring(
+                                  'agent:'.length,
+                                ),
+                              )
+                            : null,
+                        // The Actions button keeps its place in the title row
+                        // but takes a 44 × 44 corner of the box (tap targets).
+                        child: Stack(
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Expanded(child: _title(node)),
+                                      if (onNodeMenu != null)
+                                        const SizedBox(width: 28, height: 28),
+                                    ],
+                                  ),
+                                  if ('${node['detail'] ?? ''}'.isNotEmpty)
+                                    Text(
+                                      node['detail'] as String,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: colors.onSurfaceVariant,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            if (onNodeMenu != null)
+                              Positioned(
+                                top: 11,
+                                right: 4,
+                                width: 44,
+                                height: 44,
+                                child: IconButton(
+                                  padding: EdgeInsets.zero,
+                                  tooltip: tr('Actions'),
+                                  onPressed: () => onNodeMenu!(context, node),
+                                  icon: const Icon(Icons.more_vert, size: 18),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
+    return _InteractiveBoard(
+      shownCols: shownCols,
+      height: height,
+      controller: controller,
+      onViewChanged: onViewChanged,
+      buildCanvas: buildCanvas,
+    );
+  }
+}
+
+class _InteractiveBoard extends StatefulWidget {
+  const _InteractiveBoard({
+    required this.shownCols,
+    required this.height,
+    required this.controller,
+    required this.onViewChanged,
+    required this.buildCanvas,
+  });
+  final List<int> shownCols;
+  final double height;
+  final TransformationController? controller;
+  final VoidCallback? onViewChanged;
+  final Widget Function({
+    required double colWidth,
+    required double colGap,
+    required double boxWidth,
+    required double inset,
+    required Size canvasSize,
+  })
+  buildCanvas;
+
+  @override
+  State<_InteractiveBoard> createState() => _InteractiveBoardState();
+}
+
+class _InteractiveBoardState extends State<_InteractiveBoard> {
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, box) {
+      final colCount = widget.shownCols.length;
+      final width = box.maxWidth.isFinite ? box.maxWidth : 0.0;
+      final minNatural =
+          48.0 + colCount * 250.0 + math.max(0, colCount - 1) * 40.0;
+      final double colWidth, colGap, boxWidth, inset;
+      if (colCount == 0 || width <= minNatural) {
+        colWidth = 250;
+        colGap = 40;
+        boxWidth = 242;
+        inset = 0;
+      } else {
+        colGap = (width * 0.035).floorToDouble().clamp(36.0, 96.0);
+        colWidth = ((width - 48.0 - (colCount - 1) * colGap) / colCount)
+            .floorToDouble()
+            .clamp(250.0, 420.0);
+        boxWidth = colWidth - 8;
+        final natural = 48.0 + colCount * colWidth + (colCount - 1) * colGap;
+        inset = width > natural ? ((width - natural) / 2).floorToDouble() : 0;
+      }
+      final naturalWidth = colCount == 0
+          ? 20.0
+          : inset * 2 + 48.0 + colCount * colWidth + (colCount - 1) * colGap;
+      final canvasSize = Size(naturalWidth, widget.height);
+      final canvas = widget.buildCanvas(
+        colWidth: colWidth,
+        colGap: colGap,
+        boxWidth: boxWidth,
+        inset: inset,
+        canvasSize: canvasSize,
+      );
+      final controller = widget.controller;
+      final onViewChanged = widget.onViewChanged;
+      final viewer = InteractiveViewer(
+        transformationController: controller,
+        onInteractionEnd: (_) => onViewChanged?.call(),
+        constrained: false,
+        scaleEnabled: false, // the wheel scrolls; zoom has its control
+        minScale: 0.3,
+        maxScale: 2,
+        boundaryMargin: const EdgeInsets.fromLTRB(0, 0, 120, 120),
+        child: canvas,
+      );
+      final zoom = controller;
+      if (zoom == null) {
+        return viewer;
+      }
+      void clampAndSave() {
+        if (!context.mounted) return; // the map was closed
+        scrollMap(
+          zoom,
+          Offset.zero,
+          viewport: box.biggest,
+          content: canvasSize,
+        );
+        onViewChanged?.call();
+      }
+
+      void fitToWindow() {
+        if (!context.mounted) return;
+        final w = box.biggest.width;
+        final scale = w > 0 && canvasSize.width > 0
+            ? (w / canvasSize.width).clamp(0.3, 1.0)
+            : 1.0;
+        zoom.value = Matrix4.diagonal3Values(scale, scale, 1);
+        clampAndSave();
+      }
+
+      mapClamp[zoom] = clampAndSave;
+      mapFit[zoom] = fitToWindow;
+      return Stack(
+        children: [
+          Positioned.fill(
+            child: Listener(
+              onPointerSignal: (event) {
+                if (event is PointerScrollEvent) {
+                  GestureBinding.instance.pointerSignalResolver.register(
+                    event,
+                    (e) {
+                      scrollMap(
+                        zoom,
+                        (e as PointerScrollEvent).scrollDelta,
+                        viewport: box.biggest,
+                        content: canvasSize,
+                      );
+                      onViewChanged?.call();
+                    },
+                  );
+                }
+              },
+              child: viewer,
+            ),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+class _Connections extends CustomPainter {
+  _Connections(
+    this.positions,
+    this.edges,
+    this.color, {
+    required this.colors,
+    this.boxWidth = 242,
+    this.threeD = false,
+  });
+  final Map<String, Offset> positions;
+  final List<Map<String, dynamic>> edges;
+  final Color color;
+  final ColorScheme colors;
+  final double boxWidth;
+  final bool threeD;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (threeD) {
+      paintMap3dStage(canvas, size, colors);
+    }
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    for (final edge in edges) {
+      final source = positions[edge['source']];
+      final target = positions[edge['target']];
+      if (source == null || target == null) continue;
+      final forward = source.dx <= target.dx;
+      final start = source + Offset(forward ? boxWidth : 0, 41);
+      final end = target + Offset(forward ? 0 : boxWidth, 41);
+      final middle = (start.dx + end.dx) / 2;
+      final path = Path()
+        ..moveTo(start.dx, start.dy)
+        ..cubicTo(middle, start.dy, middle, end.dy, end.dx, end.dy);
+      if (threeD) {
+        paintMap3dCable(
+          canvas,
+          path,
+          start: start,
+          end: end,
+          color: color,
+          width: 1.8,
+          colors: colors,
+          castShadow: true,
+        );
+      } else {
+        canvas.drawPath(path, paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _Connections oldDelegate) =>
+      positions != oldDelegate.positions ||
+      edges != oldDelegate.edges ||
+      color != oldDelegate.color ||
+      colors != oldDelegate.colors ||
+      boxWidth != oldDelegate.boxWidth ||
+      threeD != oldDelegate.threeD;
+}

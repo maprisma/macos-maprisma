@@ -1,0 +1,212 @@
+import os
+import sys
+import tempfile
+import unittest
+import unittest.mock
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import agents  # noqa: E402
+
+MENU = '''{
+  "setup.default.agent": {"icon":"x","label":"Agent","title":"Default Agent"},
+  "setup.default.agent.claude": {"icon":"\\udb81\\udec4","label":"Claude","checked":"x","action":"y"},
+  "setup.default.agent.codex": {"icon":"\\ue905","iconFont":"omarchy","label":"Codex","action":"y"},
+  "setup.default.agent.cursor-agent": {"icon":"\\ue90d","iconFont":"omarchy","label":"Cursor CLI"},
+  "setup.default.agent.muse": {"icon":"m","label":"Muse Code"},
+  "setup.default.agent.openclaw": {"icon":"o","iconFont":"omarchy","label":"OpenClaw"},
+  "setup.default.agent.pi": {"icon":"p","iconFont":"omarchy","label":"Pi"},
+  "setup.default.browser": {"icon":"b","label":"Browser"}
+}
+'''
+WRAPPER = '#!/bin/bash\nexport MISE_MINIMUM_RELEASE_AGE=0\nmise use -g --quiet "{spec}" || exit 1\nexec mise x "{spec}" -- "{cmd}" "$@"\n'
+
+
+class AgentsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        # Installation detection must not discover agents on the developer's PC.
+        environment = unittest.mock.patch.dict(os.environ, {"HOME": str(root), "PATH": ""})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.menu = root / "menu.jsonc"
+        self.menu.write_text(MENU)
+        self.agent_file = root / "agent"
+        self.bin = root / "bin"
+        self.mise = root / "mise"
+        self.db = root / "pacman"
+        for d in (self.bin, self.mise / "installs", self.db):
+            d.mkdir(parents=True)
+        for cmd, spec in (("claude", "claude"), ("codex", "codex"), ("cursor-agent", "cursor-agent"),
+                          ("muse", "http:muse[url=https://x,bin=muse]")):
+            (self.bin / cmd).write_text(WRAPPER.format(spec=spec, cmd=cmd))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def install(self, folder, version):
+        path = self.mise / "installs" / folder
+        (path / version).mkdir(parents=True)
+        os.symlink(f"./{version}", path / "latest")
+
+    def listed(self):
+        return {a.command: a for a in agents.list_agents(self.menu, self.agent_file, self.bin, self.mise, self.db)}
+
+    def test_catalog_from_menu(self):
+        found = agents.catalog(self.menu)
+        self.assertEqual([c for c, *_ in found], ["claude", "codex", "cursor-agent", "muse", "openclaw", "pi"])
+        self.assertEqual(found[1][3], "omarchy")
+        self.assertEqual(found[0][3], "")
+
+    def test_fallback_without_menu(self):
+        self.assertEqual(agents.catalog(self.menu.with_name("missing")), agents.FALLBACK)
+
+    def test_system_package_is_found_on_path(self):
+        system = self.bin.parent / "usr-bin"
+        system.mkdir()
+        program = system / "claude"
+        program.write_text("#!/bin/sh\n")
+        program.chmod(0o755)
+        shims = self.mise / "shims"
+        shims.mkdir()
+        (shims / "codex").write_text("#!/bin/sh\n")
+        (shims / "codex").chmod(0o755)
+        (self.bin / "claude").unlink()
+        with unittest.mock.patch.dict(os.environ, {"PATH": f"{shims}:{system}"}):
+            self.assertEqual(agents.detect("claude", self.bin, self.mise, self.db), (True, "", "system"))
+            self.assertEqual(agents.detect("codex", self.bin, self.mise, self.db), (False, "", ""))
+
+    def test_wrapper_alone_is_not_installed(self):
+        self.assertFalse(self.listed()["claude"].installed)
+
+    def test_mise_install_with_version(self):
+        self.install("claude", "2.1.300")
+        self.install("http-muse", "1.4.8")
+        found = self.listed()
+        self.assertTrue(found["claude"].installed)
+        self.assertEqual(found["claude"].version, "2.1.300")
+        self.assertEqual(found["muse"].version, "1.4.8")
+        self.assertEqual(found["claude"].source, "mise")
+
+    def test_own_install_symlink(self):
+        (self.bin / "cursor-agent").unlink()
+        target = self.bin / "real-cursor"
+        target.write_text("#!/bin/sh\n")
+        os.symlink(target, self.bin / "cursor-agent")
+        found = self.listed()["cursor-agent"]
+        self.assertTrue(found.installed)
+        self.assertEqual(found.source, "own")
+
+    def test_own_install_link_names_its_version(self):
+        """Claude Code's own installer: ~/.local/bin/claude -> .../claude/versions/2.1.322."""
+        (self.bin / "claude").unlink()
+        versions = self.bin.parent / "share/claude/versions"
+        versions.mkdir(parents=True)
+        (versions / "2.1.322").write_text("#!/bin/sh\n")
+        os.symlink(versions / "2.1.322", self.bin / "claude")
+        found = self.listed()["claude"]
+        self.assertEqual((found.installed, found.version, found.source), (True, "2.1.322", "own"))
+
+    def test_openclaw_package(self):
+        (self.db / "openclaw-desktop-1.0-1").mkdir()
+        self.assertFalse(self.listed()["openclaw"].installed)
+        (self.db / "openclaw-2026.10.1-2").mkdir()
+        found = self.listed()["openclaw"]
+        self.assertTrue(found.installed)
+        self.assertEqual(found.version, "2026.10.1")
+
+    def test_openclaw_and_hermes_outside_their_packages_when_proven(self):
+        """npm, upstream's installers, pipx or a wrapper of the user's count when the program is
+        proven the agent's (install_marks); another program by the name, a stub that runs mise,
+        does not."""
+        root = Path(self.tmp.name)
+        system = root / "usr-bin"
+        system.mkdir()
+
+        def program(path, text="#!/bin/sh\n"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+            path.chmod(0o755)
+            return path
+        detect = lambda c: agents.detect(c, self.bin, self.mise, self.db)
+        with unittest.mock.patch.dict(os.environ, {"PATH": str(system), "HOME": str(root)}):
+            program(system / "openclaw")                              # someone else's openclaw
+            program(system / "hermes")                                # the Hermes JavaScript engine
+            self.assertEqual(detect("openclaw"), (False, "", ""))
+            self.assertEqual(detect("hermes"), (False, "", ""))
+            (system / "openclaw").unlink()                            # npm -g: a link into its package
+            os.symlink(program(root / "npm/lib/node_modules/openclaw/openclaw.mjs"), system / "openclaw")
+            self.assertEqual(detect("openclaw"), (True, "", "system"))
+            (system / "openclaw").unlink()                            # upstream's install-cli.sh
+            os.symlink(program(root / ".openclaw/bin/openclaw"), self.bin / "openclaw")
+            self.assertEqual(detect("openclaw"), (True, "", "own"))
+            legacy = ("#!/bin/bash\n\n# Written by omarchy-install-hermes-cli.\n\n"
+                      "if ! [[ -d \"$(mise where 'pipx:hermes-agent[extras=all]')/hermes-agent/lib\" ]]; then\n"
+                      "  mise use -g --quiet --force 'pipx:hermes-agent[extras=all]' || exit 1\nfi\n\n"
+                      "exec mise x 'pipx:hermes-agent[extras=all]' -- hermes \"$@\"\n")
+            program(self.bin / "hermes", legacy)                      # Omarchy's old stub: builds it first
+            self.assertEqual(detect("hermes"), (False, "", ""))
+            program(self.bin / "hermes", f'#!/bin/bash\nexec "{root}/.hermes/hermes-agent/venv/bin/hermes" "$@"\n')
+            self.assertEqual(detect("hermes"), (True, "", "own"))    # upstream's installer
+            for home in ("$HOME", "${HOME}", "~"):                     # a hand-made wrapper
+                program(self.bin / "hermes", f'#!/bin/sh\nexec "{home}/.hermes/bin/hermes" "$@"\n')
+                self.assertEqual(detect("hermes"), (True, "", "own"), home)
+            program(self.bin / "hermes", '#!/bin/sh\nexec "$HOMEX/.hermes/bin/hermes" "$@"\n')
+            self.assertEqual(detect("hermes"), (False, "", ""))      # another variable's folder
+            (self.bin / "hermes").unlink()                            # pipx
+            os.symlink(program(root / ".local/share/pipx/venvs/hermes-agent/bin/hermes"), self.bin / "hermes")
+            self.assertEqual(detect("hermes"), (True, "", "own"))
+
+    def test_order_installed_first_default_leading(self):
+        self.install("claude", "1")
+        self.install("codex", "1")
+        self.agent_file.write_text("codex\n")
+        order = [a.command for a in agents.list_agents(self.menu, self.agent_file, self.bin, self.mise, self.db)]
+        self.assertEqual(order[:2], ["codex", "claude"])
+        self.assertTrue(self.listed()["codex"].default)
+
+    def test_unsafe_default_agent_ignored(self):
+        self.agent_file.write_text("../evil\n")
+        self.assertEqual(agents.default_agent(self.agent_file), "")
+
+    def test_install_dir_never_leaves_installs(self):
+        for name in agents.install_dir_candidates("npm:../../etc") + agents.install_dir_candidates(".."):
+            self.assertNotIn("/", name)
+            self.assertNotIn("..", name)
+            self.assertNotEqual(name, ".")
+
+
+
+class InstallStampTest(unittest.TestCase):
+    def test_changes_when_an_agent_comes_or_goes(self):
+        with tempfile.TemporaryDirectory() as root:
+            base = Path(root)
+            bin_dir, mise, db = base / "bin", base / "mise", base / "db"
+            for folder in (bin_dir, mise / "installs", db):
+                folder.mkdir(parents=True)
+            first = agents.install_stamp(bin_dir, mise, db)
+            self.assertEqual(first, agents.install_stamp(bin_dir, mise, db))
+            (mise / "installs/cursor-agent").mkdir()
+            os.utime(mise / "installs", ns=(1, 10 ** 18))
+            second = agents.install_stamp(bin_dir, mise, db)
+            self.assertNotEqual(first, second)
+            os.utime(bin_dir, ns=(1, 2 * 10 ** 18))
+            self.assertNotEqual(second, agents.install_stamp(bin_dir, mise, db))
+            self.assertEqual(agents.install_stamp(base / "none", base / "none", base / "none"), (0, 0, 0))
+
+
+class MiseLeftoverTest(unittest.TestCase):
+    def test_only_links_left_is_not_installed(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "installs" / "opencode"
+            folder.mkdir(parents=True)
+            (folder / "latest").symlink_to(folder / "2.0.32")           # mise uninstall --all leaves this
+            self.assertIsNone(agents.mise_install("opencode", Path(tmp)))
+            (folder / "2.0.32").mkdir()
+            self.assertEqual(agents.mise_install("opencode", Path(tmp)), folder)
+
+
+if __name__ == "__main__":
+    unittest.main()

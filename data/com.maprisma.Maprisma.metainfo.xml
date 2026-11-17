@@ -1,0 +1,284 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.maprisma.Maprisma</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Maprisma</name>
+  <summary>Your AI agents, models and tools on one map</summary>
+  <developer id="io.github.ubruckhaus">
+    <name>Uwe Bruckhaus</name>
+  </developer>
+  <description>
+    <p>Maprisma shows the AI setup on your computer as cards and a map: coding agents with their
+    plan, limits and usage, local LLMs and their models, MCP servers and skills. Connect them by
+    drawing a line, with a preview and Undo.</p>
+    <ul>
+      <li>See what each agent still needs, with the command that fixes it</li>
+      <li>Install local LLMs and download models; they start and stop with their agents</li>
+      <li>Find MCP servers and skills on your computer or on the web</li>
+      <li>A health check: what works, what to fix, and what the setup is good for</li>
+    </ul>
+    <p>On Omarchy, the same app is the AI Agents Map plugin.</p>
+  </description>
+  <launchable type="desktop-id">com.maprisma.Maprisma.desktop</launchable>
+  <url type="homepage">https://github.com/uBruckhaus/Asterism</url>
+  <url type="bugtracker">https://github.com/uBruckhaus/Asterism/issues</url>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.14.8" date="2026-11-15">
+      <description>
+        <p>Clearer status: a red ! only for errors (a model too big for the GPU, a broken connection, a full
+          disk, an agent not ready), an amber warning only for updates and low limits, tips for the rest.</p>
+        <p>Agent cards: the battery and the menu stay at the right edge, the usage text sits between the
+          name and the battery; an i where an online agent has no battery; free GPU memory is a chip.
+          Claude Code's version and battery show again; the title bar and the Ask AI symbol take the
+          theme's colours; tooltips are dark with light text, and only symbols have them.</p>
+      </description>
+    </release>
+    <release version="0.14.7" date="2026-11-14">
+      <description>
+        <p>The window uses the desktop's fonts: its interface font for all text and its monospace font for
+          logs, commands, paths and the terminal (COSMIC, KDE Plasma, Hyprland and GNOME).</p>
+      </description>
+    </release>
+    <release version="0.14.6" date="2026-11-14">
+      <description>
+        <p>Installs on a fresh Linux desktop from the release archive (install.sh, per user or for every user),
+          checking the system first. The window follows Maprisma Settings › App windows (Solid, Transparent,
+          Glassy or Follow the desktop), and a tiled window's size is no longer remembered.</p>
+      </description>
+    </release>
+    <release version="0.14.5" date="2026-11-12">
+      <description>
+        <p>Add-on files are unpacked within a fixed size limit on what really comes out, so a damaged or
+          crafted add-on archive can no longer fill the memory while it is previewed.</p>
+      </description>
+    </release>
+    <release version="0.14.4" date="2026-11-12">
+      <description>
+        <p>Hardening from a security review: programs run for a short job end together with everything they
+          started; local requests and downloads have one deadline each; a program folder other accounts could
+          change is refused and the checked download is the one unpacked; terminal paste is size-limited; model
+          files must be regular files; folder scans stay within a budget; skills from the web come from one
+          commit, every file checked.</p>
+      </description>
+    </release>
+    <release version="0.14.3" date="2026-11-10">
+      <description>
+        <p>F12 saves a picture of the window privately in your Pictures folder, with an optional note about
+        what is wrong. Settings › Corners has a new choice, Slightly rounded (6 px), and every control follows
+        the setting. Smart cards take your own suggestions per category.</p>
+      </description>
+    </release>
+    <release version="0.14.2" date="2026-11-06">
+      <description>
+        <p>Add-ons left over from Asterism, this app's old name, no longer show as "Not available in this
+        version": their card says what they are and that removing them lets Maprisma use its own copy.</p>
+      </description>
+    </release>
+    <release version="0.14.1" date="2026-11-05">
+      <description>
+        <p>Strata joins the local LLMs: Maprisma finds it, shows its models, starts and stops it, connects
+        agents to it and can install it. Settings › Map › Show faded lines can hide the lines of other boxes
+        while one is selected. Odd replies from a local LLM server and odd port numbers no longer disturb the map.</p>
+      </description>
+    </release>
+    <release version="0.14.0" date="2026-11-05">
+      <description>
+        <p>The map shows what this PC already has: at the first start everything found is switched on,
+        agents installed outside a package count, and programs and local LLMs to install sit at the end of
+        their cards. Agents show their real sign-in (keyring, moved home), plan limits and costs as
+        batteries, and an online agent signs in only to its own provider. A provider's chosen model follows
+        its agents, two MCP servers of one name stay apart, Settings has sections with Find, and Ask AI uses
+        the same menus as the map, with its own Undo. Repair edits only provider entries it can read safely.</p>
+      </description>
+    </release>
+    <release version="0.13.1" date="2026-11-04">
+      <description>
+        <p>Fixes the map that turned grey whenever one agent used another. The map now reads skills or
+        MCP → agent → provider → model, one line per step and only real connections; the "only what is
+        connected or pinned" filter hides models nobody uses. Drawing a local provider onto one of its
+        models is one short step, and an agent connected to that provider later gets the model. Tasks
+        handed to an agent ("Do it with …") stay in a private file instead of the command line.</p>
+      </description>
+    </release>
+    <release version="0.13.0" date="2026-11-04">
+      <description>
+        <p>A calmer map: lines show only real connections, red only marks a real problem, and agents
+        working together get their own colour with an arrow to the agent they use. Drawing a line asks
+        in a small dialog and confirms with a note and Undo; a drop that cannot work says why. Ask AI
+        can make every change you can draw on the map, through the same preview, and suggests example
+        questions for each part of the map.</p>
+      </description>
+    </release>
+    <release version="0.12.0" date="2026-10-30">
+      <description>
+        <p>Asterism is now Maprisma: a Flutter app with its service in Dart, nothing of Python in it.
+        Your Asterism settings come along at the first start. On Omarchy it opens as a popup under the
+        bar (maprisma --toggle). New: daily AI checks for MCP server updates, a local helper on your
+        own LLM, recent changes with Undo after a restart, keyboard shortcuts and accessibility checks,
+        safe updates of running agents, usage figures from Omarchy, and add-ons signed with a new key.</p>
+      </description>
+    </release>
+    <release version="0.11.1" date="2026-10-26">
+      <description>
+        <p>Everything AI on this PC is on the map: MCP servers and skill folders that no agent uses yet
+        are faded boxes, and a line from an agent connects one (nothing is connected by itself). Setup's
+        Local MCP servers and Skills get Add folder… for places such as a shared disk with apps and
+        skills, and servers at a web address get a card of their own. The first open shows what is
+        found in an animated overview. Also: cards on the map fold and a pin keeps the layout; Terminals…
+        and Stop… for agents started outside the window; Ask an agent which model or MCP server fits;
+        agents installed with mise start from the app launcher; safer model moves and many hardening
+        fixes.</p>
+      </description>
+    </release>
+    <release version="0.11.0" date="2026-10-23">
+      <description>
+        <p>Subagents get a page of their own: a mark on the agent's box opens their map with each one's
+        task, working ones lit and finished ones dimmed (Settings › Subagents). An arrow joins two agents
+        when one started the other. What every agent's tokens cost at API prices: a cost label for
+        agents paid per token, coloured against a day's limit, and an API cost card on its page with
+        input, output and cache per model, in dollars or euros (Settings › Costs). Token counts are read
+        for Claude Code, Codex, Gemini CLI, Pi, Oh My Pi, OpenClaw, Crush, DeepSeek Harness and Goose, a
+        new agent. Also: Smart Check, the usage box on a working agent's line, a lighter map animation
+        and less work in the background.</p>
+      </description>
+    </release>
+    <release version="0.10.1" date="2026-10-21">
+      <description>
+        <p>The user manual catches up with 0.10.0, in all eight languages: models at once and the GPU
+        memory check before an agent starts, the violet lines, the network page, Configure…, reordering the
+        header's symbols, the Information page and a new picture of the main window.</p>
+      </description>
+    </release>
+    <release version="0.10.0" date="2026-10-21">
+      <description>
+        <p>A new local LLM or a new agent is now one add-on: the app asks each local LLM's engine and each
+        agent's facts and never names them, and templates plus a guide show how to make one. Local LLMs
+        that serve several models get a models-at-once setting with GPU memory warnings, also before an
+        agent starts; different models of one local LLM get violet lines.</p>
+        <p>Each agent has a network page (traffic in and out, where it goes), the header's symbols can be
+        reordered by dragging, and an Information page lists the author's other plugins. Configure… opens
+        an agent's or local LLM's own setup in a terminal. Connect pages and the MCP page share a clearer
+        layout; Oh My Pi connects to local LLMs; freshly installed local LLMs are found and explained.</p>
+      </description>
+    </release>
+    <release version="0.9.0" date="2026-10-20">
+      <description>
+        <p>Play chess against your agents. Claude Code, Codex, Hermes and Pi can be asked for one move at a
+        time, without tools, in an empty private folder: a chess page with a board that turns to your side,
+        captured pieces beside it, a thinking time that sets how long and how strongly the agent plays, and a
+        game that keeps running in the background with a button in the header and on the agent's box.</p>
+        <p>Local LLMs that hold GPU memory get a stop button that asks first (free the memory or stop it).
+        LM Studio open without its server says so and offers Start server; the model it has loaded is
+        marked, with a light line to it when no agent uses it. A new agent's web look-up no longer fails.</p>
+      </description>
+    </release>
+    <release version="0.8.1" date="2026-10-19">
+      <description>
+        <p>Safer commands and clearer texts. Commands run in a terminal window quote every word, the
+        API key command's answer and the skill writer's answer file are read with a size limit, and
+        the key file is written as a new private file. Hints no longer point at the map's old "+" boxes
+        but at Setup. The manual says exactly when a password is asked (installing an agent that comes
+        as a system package) and names the right version.</p>
+      </description>
+    </release>
+    <release version="0.8.0" date="2026-10-19">
+      <description>
+        <p>Setup (formerly My setup) and Map are on every page, Setup first. A red ! in the header lists
+        open problems, each with a button to where it is fixed, and updates and suggestions; cards with a
+        problem show the same red !. Online agents show a battery for what is left of their limits, and
+        running local LLMs one for the GPU memory still free. The map runs across the whole width, starts
+        agents with ▶ on their boxes, shows unused connections as red dotted lines and, in a narrow window,
+        picks what to show by itself. A card explains the first connection and Setup explains in five
+        steps how things get onto the map. Agents are now described as data: their add-ons bring facts
+        instead of code, and extension add-ons can add to an agent. With Insights 1.1.0 the Topics card
+        shows which topics took the most tokens. The user manual comes in eight languages and opens in
+        the app's language.</p>
+      </description>
+    </release>
+    <release version="0.7.2" date="2026-10-19">
+      <description>
+        <p>My setup: one page of cards for everything the map shows. Agents, local LLMs and online
+        providers are switched on and off there; MCP servers, skill folders and models each have a card
+        with a menu to update, start, open, uninstall, remove or move, and a card to add more. Cards with
+        an update waiting show the new version. The map now shows only what is set up: no dashed boxes,
+        no Hide and no "+ Available" any more. Lists of MCP servers, models and skills and the map's
+        boxes are cards with icons, and the user manual is new.</p>
+      </description>
+    </release>
+    <release version="0.7.1" date="2026-10-18">
+      <description>
+        <p>A welcome page for a new Asterism: the agents, local LLMs and online providers as cards with
+        their icons, grouped by kind, the ones found on this PC ticked; a click on a card ticks it, one
+        button switches them on. It shows at every start while nothing is switched on. Settings has an
+        About section with the version and a link to the project on GitHub; the health check line stays
+        away while the map is empty. MCP servers show the skills written for them, whether those still
+        match the server's tools, and Update skill rewrites one with a preview and Undo.</p>
+      </description>
+    </release>
+    <release version="0.7.0" date="2026-10-18">
+      <description>
+        <p>Add-ons: every agent and local LLM Asterism understands is now a signed add-on, and a new
+        Set up page switches on the ones installed on this PC with one click. The Add-ons page lists
+        them with search, details and a homepage button, installs more from the signed catalog, takes
+        a dropped .zip or link, and suggests an add-on when a new agent appears. Agents and local LLMs
+        can be installed and removed from their cards, in a terminal inside the window (sudo asks for
+        your password there). Session numbers per project for OpenCode and Hermes too; session titles
+        and the summary by Claude are now the Insights add-on.</p>
+      </description>
+    </release>
+    <release version="0.6.0" date="2026-10-18">
+      <description>
+        <p>Check for updates (Add MCP › On this PC) moves every app that provides an MCP server to its
+        new version in one step, with one preview, backup and Undo, and then tests each updated
+        server. Models moved to the trash in LM Studio leave the map. Help shows LLM Monitor as a
+        small animation in your theme's colours, and the user manual has new screenshots.</p>
+      </description>
+    </release>
+    <release version="0.5.0" date="2026-10-18">
+      <description>
+        <p>A Healthy &amp; Security check on every agent's details page shows what the agent may do
+        without asking you, explains every setting and choice with its risk, changes them with a
+        preview and Undo, and lists what lowers each risk; local LLMs show whether only this PC can
+        reach them. Help shows the disk space of agents, local LLMs and models. Pin boxes on the map,
+        right-click menus with the cards' actions, move models between folders by dragging. The user
+        manual has a new chapter on security.</p>
+      </description>
+    </release>
+    <release version="0.4.0" date="2026-10-17">
+      <description>
+        <p>An ⓘ legend in the header explains every dot, line and mark of the map. Hide puts away the
+        agents and providers you don't use (a provider only while no shown agent uses one of its
+        models); + Available lists them under Hidden with Show again. Terminal tabs above the map and
+        the terminals show which agents are working, running or ended. The scroll bar no longer covers
+        the cards' arrows in a narrow window.</p>
+      </description>
+    </release>
+    <release version="0.3.0" date="2026-10-17">
+      <description>
+        <p>Agents run in the window: Start here or in a terminal window, Stop on the card, and running
+        agents show a green icon in the cards and the new tree sidebar. Agent details show herdr's live
+        state and Claude Code's subagent runs. The map lights up along the lines of agents that are
+        working. The models page follows LM Studio's layout. Back returns to the page you came from, an
+        opened card scrolls fully into view, the install page has bigger buttons, and the health check
+        line shows only when something needs fixing.</p>
+      </description>
+    </release>
+    <release version="0.2.1" date="2026-10-17">
+      <description>
+        <p>Downloads never write through a link someone planted in a shared model folder (the
+        half-finished file is created new or resumed only when it is your own). Settings fit the
+        window: two columns when it is wide, framed choices, shorter explanations.</p>
+      </description>
+    </release>
+    <release version="0.2.0" date="2026-10-17">
+      <description>
+        <p>Claude Code's details: your last 30 days per project (working time, sessions, tokens, lines
+        changed, API value), topics under Claude Code's own session titles, and an optional written
+        summary by Claude from those titles and numbers.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-10-17"/>
+  </releases>
+</component>

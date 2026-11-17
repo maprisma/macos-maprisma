@@ -1,0 +1,73 @@
+# OpenCode (docs/adapter-format.md). Its session database, connecting a local LLM and its security
+# settings are hooks (opencode.py); everything else is facts.
+command = "opencode"
+name = "OpenCode"
+label = "OpenCode"
+icon = "U+E902"
+icon_font = "omarchy"
+short_model_flag = true
+usage = "opencode"
+homepage = "https://opencode.ai"
+data = ["~/.local/share/opencode", "~/.config/opencode"]
+home = "~/.config/opencode"
+activity = ["~/.local/share/opencode/opencode.db"]
+
+[[install]]
+kind = "mise"
+spec = "opencode"
+
+[sessions]
+hook = true
+note = "Numbers from {0}'s session database (no text is read). The API value is what the tokens would cost at API prices, not what a plan costs."
+note_args = ["OpenCode"]
+
+[local_llm]
+files = ["~/.config/opencode/opencode.json"]
+hooks = true
+
+[subagents]                            # its subagents (task tool): the map's subagents page
+format = "opencode-db"
+path = "~/.local/share/opencode/opencode.db"
+
+[skills]
+dirs = ["~/.config/opencode/skills", "~/.claude/skills", "~/.agents/skills"]
+own = "~/.config/opencode/skills"
+
+[mcp]
+path = "~/.config/opencode/opencode.json"
+key = "mcp"
+shape = "opencode"
+
+[access]
+how = "An account or API key for any provider, or a local LLM from the map"
+login = "opencode auth login"
+files = [".local/share/opencode/auth.json"]
+local_ok = true
+
+[[access.logins]]
+label = "A provider (account or key)"
+argv = ["opencode", "auth", "login"]
+
+[security]
+asks = "permission.bash"     # the setting that says when it asks first
+hook = true
+
+[details]                              # its model and providers (the agent's card)
+reader = "opencode"
+
+[models]                               # its online models on the map: "provider/model" (its hooks)
+hook = true
+
+[ask]                                  # one prompt, one answer (the first-agent guide's test)
+argv = ["opencode", "run", "{prompt}"]
+note = "tools are not switched off, but it asks before using one (no --auto); the test's question needs none"
+helper = false                         # not for the other apps: run allows its shell without asking
+# (https://opencode.ai/docs/permissions.md: the base policy allows "*"); --agent plan only blocks edits
+
+# The AI helper of the other Maprisma apps (tools/export-helpers.py -> data/helpers.json, docs/adapter-format.md).
+
+[task]                                 # its TUI with a first prompt (--prompt, OpenCode 1.x docs); the 2.x docs
+                                       # name it only for the minimal UI (opencode mini --prompt)
+# Source: https://opencode.ai/v1/docs/cli/, https://opencode.ai/docs/cli/commands.md
+argv = ["opencode", "--prompt", "{prompt}"]
+verified = false

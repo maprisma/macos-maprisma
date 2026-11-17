@@ -1,0 +1,114 @@
+"""Everything that depends on the desktop, behind one small interface.
+
+The rest of Maprisma asks this module, never Omarchy or Hyprland directly:
+where its own files live, the theme's colours and window rounding, window
+actions (focus, maximize, make room for the map), terminals, the agents the
+desktop offers and their usage records.
+
+Two implementations: desktop_omarchy (Omarchy, Hyprland) and desktop_generic
+(any other desktop: GNOME, KDE, …; Maprisma). current() picks one at start:
+MAPRISMA_DESKTOP=omarchy|generic decides when set (for testing), else Omarchy
+when its files are there (/usr/share/omarchy or $OMARCHY_PATH) and the session
+is not another desktop's (XDG_CURRENT_DESKTOP naming COSMIC, KDE, … but not
+Hyprland: Omarchy with Plasma installed beside it), else generic.
+
+App name, app id and configuration paths come from identity.py. The facade also
+decides whether this edition needs the legacy plugin launcher entry.
+
+The interface (each desktop implementation provides all of it):
+
+    NAME                          "omarchy" or "generic"
+    theme_dir() -> Path | None    a folder to watch for theme changes (None: none)
+    theme_colors() -> dict        the theme's colours as a TOML-like dict ({} when unknown)
+    window_rounding() -> int|None the windows' corner radius, None when unknown
+    rounding_source() -> str      who set it: "user", "theme", "default" or "desktop"
+    corners_note() -> str         the Corners setting's explanation (translated)
+    decorated() -> bool           whether the desktop draws the window's title bar
+    header_moves_window() -> bool whether dragging the header moves the window (not on a tiling desktop)
+    stays_in_background() -> bool whether closing only hides the window (else it quits when nothing runs in it)
+    attach_window(window)         the app's Gtk.Window, once it exists
+    focus_window(app_id) -> bool  bring the app's window to the front (switching workspaces)
+    focus_process(pids) -> bool   bring the window of one of these programs (or of a parent: its terminal)
+                                  to the front; False when the desktop cannot
+    windows() -> dict             {process id: title} of the windows on screen ({} when the desktop cannot tell)
+    is_maximized(app_id) -> bool|None
+    maximize(app_id) -> bool      maximize where it is
+    launch_app(argv) -> bool                      an app window of its own (LM Studio)
+    open_terminal(argv, cwd) -> bool              a program in the user's terminal (a new window)
+    run_in_terminal(command) -> bool              a fixed command in a terminal that waits at the end
+    run_steps_in_terminal(commands) -> bool       several, one after the other while each succeeds
+    agent_catalog() -> list[(command, label, icon, icon font)] | None   None: use the built-in list
+    default_agent() -> str        the desktop's default agent command ("" when none)
+    usage_dir() -> Path | None    where usage records are (None: the desktop keeps none)
+    has_usage_collector(command) -> bool
+    refresh_usage(command) -> bool                ask the desktop for fresh usage (blocking)
+    install_command(package) -> str               the command that installs "vte4" or "xdg-terminal-exec" ("" unknown)
+    text(key) -> str              a translated text that says how something is done on this desktop:
+                                  install_agent, install_agent_first, install_agent_short,
+                                  install_coding_agent, install_terminal
+"""
+
+import os
+import identity
+from pathlib import Path
+
+OMARCHY_ROOT = Path("/usr/share/omarchy")
+
+
+def app_name() -> str:
+    return identity.name()
+
+
+def app_id() -> str:
+    return identity.app_id()
+
+
+def config_dir() -> Path:
+    return identity.config_dir()
+
+
+def launcher_entry() -> bool:
+    """Maprisma's package supplies its launcher entry: the app never writes one."""
+    return False
+
+
+def detect(environ=None) -> str:
+    """"omarchy" or "generic"."""
+    environ = os.environ if environ is None else environ
+    wanted = environ.get("MAPRISMA_DESKTOP", "")
+    if wanted in ("omarchy", "generic"):
+        return wanted
+    # Omarchy's own folder is enough: the watcher service (systemd --user) may not see Hyprland's variables.
+    if other_session(environ):
+        return "generic"
+    omarchy = Path(environ.get("OMARCHY_PATH") or OMARCHY_ROOT)
+    return "omarchy" if omarchy.is_dir() else "generic"
+
+
+def other_session(environ) -> bool:
+    """Whether XDG_CURRENT_DESKTOP names a desktop and none of its names is Hyprland (a COSMIC or Plasma
+    session on a PC that also has Omarchy); unset says nothing."""
+    names = [n for n in environ.get("XDG_CURRENT_DESKTOP", "").upper().split(":") if n]
+    return bool(names) and "HYPRLAND" not in names
+
+
+_current = None
+
+
+def current():
+    """The implementation for this desktop (chosen once)."""
+    global _current
+    if _current is None:
+        if detect() == "omarchy":
+            import desktop_omarchy as chosen
+        else:
+            import desktop_generic as chosen
+        _current = chosen
+    return _current
+
+
+def __getattr__(name):
+    """desktop.<anything in the interface> → the current implementation's."""
+    if name.startswith("__"):
+        raise AttributeError(name)
+    return getattr(current(), name)

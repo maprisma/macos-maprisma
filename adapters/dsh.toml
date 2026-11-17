@@ -1,0 +1,59 @@
+# DeepSeek Harness (docs/adapter-format.md), installed by the app (install_ctl.Dsh). Connecting a local
+# LLM and its MCP servers (a YAML profile) are hooks (dsh.py) over dsh_ctl.
+command = "dsh"
+name = "DeepSeek Harness"
+label = "DeepSeek Harness"
+icon = "U+F0E7B"
+installer = "dsh"
+offered = false
+homepage = "https://www.npmjs.com/package/@deepseek-ai/dsh"
+data = ["~/.dsh"]
+home = "~/.dsh"
+activity = ["~/.dsh/sessions"]
+start = ["--profile", "web"]           # dsh alone only asks for a profile: the one the map sets up
+
+[[install]]
+kind = "installer"
+
+[sessions]
+reader = "dsh-files"              # a reader the app has (~/.dsh/sessions)
+note = "Numbers from {0}'s session files (no text is read). The API value is what the tokens would cost at API prices, not what a plan costs."
+note_args = ["DeepSeek Harness"]
+
+[skills]
+dirs = ["~/.dsh/skills", "~/.agents/skills"]
+own = "~/.dsh/skills"
+
+[mcp]
+path = "~/.dsh/profiles/web/cordis.patch.yml"
+format = "yaml"
+key = ""
+read = "hook"
+write = "hook"
+native = "hook"
+
+[local_llm]
+files = ["~/.dsh/profiles/web/cordis.patch.yml"]
+hooks = true
+
+[access]
+how = "An API key from platform.deepseek.com, or a local LLM from the map"
+login = "dsh web"
+files = [".dsh/.credentials.yaml"]
+env = ["DEEPSEEK_API_KEY"]
+local_ok = true
+per_token = true                       # DeepSeek has no plans: an API key, paid per token
+
+[details]                              # its model and providers (the agent's card)
+reader = "dsh"
+
+[models]                               # its online models on the map: "provider/model" (its hooks)
+hook = true
+
+# The AI helper of the other Maprisma apps (tools/export-helpers.py -> data/helpers.json, docs/adapter-format.md).
+
+# No [task]: no interactive terminal mode with a first prompt is shipped (dsh web is a browser UI).
+# No [ask]: dsh headless answers one task, but its shipped presets (workspace-write, danger-full-access)
+# let it write; there is no read-only or no-tools option.
+# Source: https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/cli-help.md,
+# docs/subsystems/permission-presets.md

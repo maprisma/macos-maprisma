@@ -1,0 +1,304 @@
+import 'package:maprisma/agent_map.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  testWidgets('Subagent badge opens children without selecting the parent', (
+    tester,
+  ) async {
+    String? selected;
+    String? expanded;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentMap(
+            graph: {
+              'nodes': [
+                {
+                  'id': 'agent:test-agent',
+                  'column': 1,
+                  'kind': 'agent',
+                  'label': 'Test agent',
+                  'detail': '',
+                  'status': 'running',
+                },
+              ],
+              'edges': [],
+              'activity': {
+                'test-agent': {
+                  'subagents_supported': true,
+                  'active_subagents': 1,
+                  'children': [
+                    {'key': 'child'},
+                  ],
+                },
+              },
+            },
+            onAgent: (command) => selected = command,
+            onSubagents: (command) => expanded = command,
+            tr: (key) => key,
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.byTooltip('Subagents: 1 / 1'));
+    expect(expanded, 'test-agent');
+    expect(selected, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Selecting an agent map node preserves its adapter command', (
+    tester,
+  ) async {
+    String? selected;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentMap(
+            graph: {
+              'nodes': [
+                {
+                  'id': 'agent:test-agent',
+                  'column': 1,
+                  'kind': 'agent',
+                  'label': 'Visible agent name',
+                  'detail': '1.0',
+                  'status': '',
+                },
+                {
+                  'id': 'cloud:provider',
+                  'column': 2,
+                  'kind': 'cloud',
+                  'label': 'Provider name',
+                  'detail': '',
+                  'status': '',
+                },
+              ],
+              'edges': [
+                {
+                  'source': 'agent:test-agent',
+                  'target': 'cloud:provider',
+                  'kind': 'uses',
+                },
+              ],
+            },
+            onAgent: (command) => selected = command,
+            tr: (key) => key,
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('Visible agent name'));
+    expect(selected, 'test-agent');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Empty maps remain navigable without invented nodes', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentMap(
+            graph: {'nodes': [], 'edges': []},
+            onAgent: (_) {},
+            tr: (key) => key,
+          ),
+        ),
+      ),
+    );
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+    expect(find.text('Agents'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a battery and a cost in the agents\' boxes, with tooltips', (
+    tester,
+  ) async {
+    Map<String, dynamic> node(String id, String label) => {
+      'id': id,
+      'column': 1,
+      'kind': 'agent',
+      'label': label,
+      'detail': '',
+      'status': '',
+    };
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentMap(
+            graph: {
+              'nodes': [
+                node('agent:claude', 'Claude Code'),
+                node('agent:dsh', 'DSH'),
+              ],
+              'edges': [],
+              'agent_badges': {
+                'agent:claude': {
+                  'kind': 'battery',
+                  'left': 0.2,
+                  'colour': 'yellow',
+                  'tip': '5 h: 20 % left',
+                },
+                'agent:dsh': {
+                  'kind': 'cost',
+                  'label': r'$1.50 today',
+                  'colour': 'green',
+                  'tip': 'Paid per token',
+                },
+              },
+            },
+            onAgent: (_) {},
+            tr: (key) => key,
+          ),
+        ),
+      ),
+    );
+    expect(find.byKey(const ValueKey('agent-battery')), findsOneWidget);
+    expect(find.text(r'$1.50 today'), findsOneWidget);
+    expect(find.byTooltip('5 h: 20 % left'), findsOneWidget);
+    expect(find.byTooltip('Paid per token'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    "paid per token: the day's limit left as a battery beside the cost; "
+    'old limits faded',
+    (tester) async {
+      Map<String, dynamic> node(String id, String label) => {
+        'id': id,
+        'column': 1,
+        'kind': 'agent',
+        'label': label,
+        'detail': '',
+        'status': '',
+      };
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AgentMap(
+              graph: {
+                'nodes': [
+                  node('agent:codex', 'Codex'),
+                  node('agent:hermes', 'Hermes'),
+                ],
+                'edges': [],
+                'agent_badges': {
+                  'agent:codex': {
+                    'kind': 'battery',
+                    'left': 0.6,
+                    'colour': 'green',
+                    'stale': true,
+                    'tip':
+                        'Measured Thu 09:00: these numbers may be out of date.',
+                  },
+                  'agent:hermes': {
+                    'kind': 'cost',
+                    'left': 0.2,
+                    'label': r'$8.00 today',
+                    'colour': 'yellow',
+                    'tip': 'Paid per token',
+                  },
+                },
+              },
+              onAgent: (_) {},
+              tr: (key) => key,
+            ),
+          ),
+        ),
+      );
+      expect(find.byKey(const ValueKey('agent-battery')), findsNWidgets(2));
+      expect(find.text(r'$8.00 today'), findsOneWidget);
+      expect(find.byKey(const ValueKey('agent-battery-stale')), findsOneWidget);
+      final faded = tester.widget<Opacity>(
+        find.byKey(const ValueKey('agent-battery-stale')),
+      );
+      expect(faded.opacity, lessThan(1));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('a working agent shows its usage statistics box', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentMap(
+            graph: const {
+              'nodes': [
+                {
+                  'id': 'agent:claude',
+                  'column': 1,
+                  'kind': 'agent',
+                  'label': 'Claude Code',
+                  'detail': '',
+                  'status': 'running',
+                },
+              ],
+              'edges': [],
+              'usage_boxes': {
+                'agent:claude': {
+                  'parts': [
+                    ['30 t/s', 'line'],
+                    ['1M', 'line'],
+                    ['92%', 'red'],
+                  ],
+                  'model': 'claude-opus-5-5',
+                },
+              },
+              'usage_box_size': 9,
+            },
+            onAgent: (_) {},
+            tr: (key) => key,
+          ),
+        ),
+      ),
+    );
+    expect(find.text('30 t/s · 1M · 92%'), findsOneWidget);
+    expect(find.byTooltip('claude-opus-5-5'), findsOneWidget);
+    final label = tester.widget<Text>(find.text('30 t/s · 1M · 92%'));
+    expect(label.style?.fontSize, closeTo(9 * 1.33, 0.01));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the map works by keyboard: Tab, Enter and the Actions menu', (
+    tester,
+  ) async {
+    String? opened;
+    String? menu;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentMap(
+            graph: const {
+              'nodes': [
+                {
+                  'id': 'agent:pi',
+                  'column': 1,
+                  'kind': 'agent',
+                  'label': 'Pi',
+                  'detail': '',
+                  'status': 'running',
+                },
+              ],
+              'edges': [],
+            },
+            onAgent: (command) => opened = command,
+            onNodeMenu: (_, node) => menu = node['id'] as String,
+            tr: (key) => key,
+          ),
+        ),
+      ),
+    );
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab); // the box
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pump();
+    expect(opened, 'pi');
+    await tester.sendKeyEvent(LogicalKeyboardKey.tab); // its Actions
+    await tester.pump();
+    await tester.sendKeyEvent(LogicalKeyboardKey.space);
+    await tester.pump();
+    expect(menu, 'agent:pi');
+  });
+}

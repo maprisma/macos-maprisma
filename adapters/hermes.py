@@ -1,0 +1,256 @@
+"""Hermes's hooks (adapters/hermes.toml): its session database, connecting a local LLM, and its
+skill folder list (YAML text).
+
+Sessions come from ~/.hermes/state.db (read-only). Only these columns are read: of sessions the id,
+parent id, folder, times, model, tokens and cost; of messages the session id and time. Never titles,
+prompts or message content (titles: the Insights add-on).
+"""
+
+import re
+import sqlite3
+from pathlib import Path
+
+import harnesses
+from harnesses import Session
+
+DB = Path.home() / ".hermes/state.db"
+
+
+def sessions(db_path: Path = DB) -> dict:
+    """{session id: Session} for Hermes's top-level sessions, their child sessions counted in as
+    subagent runs (Hermes does not name a type for them)."""
+    db = harnesses.connect(db_path)
+    if db is None:
+        return {}
+    try:
+        rows = db.execute(
+            "SELECT id, parent_session_id, cwd, started_at, COALESCE(last_activity_at, ended_at, started_at),"
+            " model, input_tokens, COALESCE(output_tokens, 0) + COALESCE(reasoning_tokens, 0),"
+            " cache_read_tokens, cache_write_tokens, COALESCE(actual_cost_usd, estimated_cost_usd), actual_cost_usd"
+            " FROM sessions ORDER BY started_at DESC LIMIT ?", (harnesses.MAX_SESSIONS,)).fetchall()
+        times: dict = {}
+        for sid, stamp in db.execute(
+                "SELECT session_id, timestamp FROM messages ORDER BY timestamp DESC LIMIT ?",
+                (harnesses.MAX_MESSAGES,)):
+            try:
+                times.setdefault(str(sid), []).append(float(stamp))
+            except (TypeError, ValueError):
+                continue
+    except sqlite3.Error:
+        return {}
+    finally:
+        db.close()
+    sessions, runs = {}, []
+    for sid, parent, cwd, started, last, model, inp, out, cache_read, cache_write, cost, actual in rows:
+        s = Session(cwd=harnesses.folder(cwd))
+        s.tokens[harnesses.model_name(model)] = [harnesses.number(inp), harnesses.number(out),
+                                                 harnesses.number(cache_read), harnesses.number(cache_write)]
+        fallback = [t for t in (started, last) if isinstance(t, (int, float))]
+        harnesses.add_times(s, times.get(str(sid)) or fallback)
+        s.cost = harnesses.money(cost)
+        s.estimated = s.cost > 0 and harnesses.money(actual) <= 0     # an estimate is no bill (Costs.billed)
+        if parent:
+            runs.append((str(parent), s))
+        else:
+            sessions[str(sid)] = s
+    for parent, run in runs:
+        if parent in sessions:
+            harnesses.add_run(sessions[parent], "?", run)
+    return sessions
+
+
+# --- pointed at a local LLM (connect.plan) --------------------------------------------------------
+
+def llm_text(text: str, provider: str, label: str, url: str, models: list, context: dict,
+                model: str, use_now: bool, remove: bool = False) -> str:
+    import connect
+    entry = [f"  {provider}:", f"    name: {label}", f"    api: {url}", "    api_key: local",
+             f"    default_model: {model}", "    discover_models: false", "    models:"]
+    for name in models:
+        if context.get(name):
+            entry += [f"      {name}:", f"        context_length: {context[name]}"]
+        else:
+            entry.append(f"      {name}: {{}}")
+    entry_text = "\n".join(entry) + "\n"
+
+    text = connect.providers_entry_replaced(text, entry_text, provider, remove)
+
+    if remove:
+        text = _model_off(text, provider)
+    if use_now and not remove:
+        text = model_text(text, provider, model)
+    return text
+
+
+def model_text(text: str, provider: str, model: str) -> str:
+    """The model block set to `model` of `provider` (its endpoint comes from its providers entry);
+    the rest of the file stays as it is."""
+    import connect
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", provider) \
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,159}", model):
+        raise ValueError("bad provider or model")
+    import json
+    block = connect._top_block(text, "model")
+    # Quoted (JSON's double quotes are YAML's): an id such as "null", "true" or "1.5" stays a name.
+    lines = [f"  default: {json.dumps(model)}", f"  provider: {json.dumps(provider)}", "  base_url: ''"]
+    if block is None:
+        return "model:\n" + "\n".join(lines) + "\n" + text
+    start, end = block
+    body = text[start:end]
+    header = body.split("\n", 1)[0]
+    if re.sub(r"#.*$", "", header).strip() != "model:":
+        # Written inline ("model: {default: …}") or as a plain value: not edited line by line here.
+        raise ValueError("Hermes's model setting is written inline in config.yaml; change it in Hermes")
+    children = [len(l) - len(l.lstrip(" ")) for l in body.split("\n")[1:] if l.strip() and not l.lstrip().startswith("#")]
+    if any(indent != 2 for indent in children) or "\t" in body:
+        # Only the two-space layout Hermes writes is edited here: another one would come out mixed.
+        raise ValueError("Hermes's model setting in config.yaml is indented in a way the app does not edit; "
+                         "change it in Hermes")
+    for line in lines:
+        key = line.split(":", 1)[0].strip()
+        if re.search(rf"^  {key}:", body, re.MULTILINE):
+            body = re.sub(rf"^  {key}:.*$", lambda _m, line=line: line, body, count=1, flags=re.MULTILINE)
+        else:
+            body = body.rstrip("\n") + "\n" + line + "\n"
+    return text[:start] + body + text[end:]
+
+
+# --- its online models on the map (online_models) ------------------------------------------------
+
+def models_choices(current="", home=None):
+    """"provider/model" of every model its providers block lists (under "    models:")."""
+    import connect
+    from pathlib import Path
+    text = connect._read((home or Path.home()) / ".hermes/config.yaml")
+    found = []
+    for start, end, key in _entries(text):
+        entry = text[start:end].partition("\n")[2]
+        models = re.search(r"^    models:[ \t]*\n((?:(?:      ).*\n?|\s*\n)*)", entry, re.MULTILINE)
+        if models:
+            found += [f"{key}/{name}" for name in
+                      re.findall(r"^      ([^\s#][^\n#]*?):(?=[ \t]|$)", models.group(1), re.MULTILINE)]
+    return found
+
+
+def _entries(text):
+    """(start, end, key) of each providers entry, offsets into `text`; [] when unreadable."""
+    import connect
+    block = connect._top_block(text, "providers")
+    if block is None:
+        return []
+    header, _nl, body = text[block[0]:block[1]].partition("\n")
+    offset = block[0] + len(header) + 1
+    try:
+        return [(offset + s, offset + e, key) for s, e, key in connect.provider_entries(body)]
+    except ValueError:
+        return []
+
+
+def models_plan(model, home):
+    """(file, old text, new text, provider): its model block (default, provider, base_url)."""
+    import connect
+    import online_models
+    provider, name = online_models.split(model)
+    path = home / ".hermes/config.yaml"
+    old = connect._read(path)
+    return path, old, model_text(old, provider, name), provider
+
+
+def _first_provider(text: str):
+    """(name, default model) of the first provider still in the providers block, or None."""
+    for start, end, key in _entries(text):
+        default = re.search(r"^    default_model:\s*(\S.*?)\s*$", text[start:end].partition("\n")[2], re.MULTILINE)
+        if default:
+            return key, default.group(1)
+    return None
+
+
+def _model_off(text: str, provider: str) -> str:
+    """The model block after `provider` was removed: when Hermes used it, the next local provider
+    still set up (its default model) takes over; when none is left, model and provider go, so
+    nothing points at a provider that is gone."""
+    import connect
+    block = connect._top_block(text, "model")
+    if block is None:
+        return text
+    start, end = block
+    body = text[start:end]
+    if not re.search(rf"^  provider:\s*[\"']?{re.escape(provider)}[\"']?\s*$", body, re.MULTILINE):
+        return text
+    following = _first_provider(text)
+    if following is not None:
+        name, default = following
+        body = re.sub(r"^  default:.*$", lambda _m: f"  default: {default}", body, count=1, flags=re.MULTILINE)
+        body = re.sub(r"^  provider:.*$", lambda _m: f"  provider: {name}", body, count=1, flags=re.MULTILINE)
+    else:
+        body = re.sub(r"^  (?:default|provider):.*\n?", "", body, flags=re.MULTILINE)
+    return text[:start] + body + text[end:]
+
+
+def local_llm_connected(texts, provider):
+    import connect
+    return provider in connect.provider_keys(texts[0])
+
+
+def local_llm_active(texts, provider):
+    import connect
+    block = connect._top_block(texts[0], "model")
+    return bool(block) and re.search(rf"^  provider:\s*[\"']?{re.escape(provider)}[\"']?\s*$", texts[0][block[0]:block[1]],
+                                     re.MULTILINE) is not None
+
+
+def local_llm_transform(texts, provider, label, url, models, context, model, use_now, remove):
+    return [llm_text(texts[0], provider, label, url, models, context, model, use_now, remove)]
+
+
+# --- skills (skills_ctl) --------------------------------------------------------------------------
+
+def _skill_dirs_in(text: str) -> list[str]:
+    import connect
+    block = connect._top_block(text, "skills")
+    if block is None:
+        return []
+    body = text[block[0]:block[1]]
+    found = re.search(r"^  external_dirs:[ \t]*\n((?:    - .*\n?)*)", body, re.MULTILINE)
+    if found is None:
+        inline = re.search(r"^  external_dirs:[ \t]*\[(.*)\]", body, re.MULTILINE)
+        return [d.strip().strip("'\"") for d in inline.group(1).split(",") if d.strip()] if inline else []
+    return [line[6:].strip().strip("'\"") for line in found.group(1).splitlines() if line.strip()]
+
+
+def skills_listed():
+    import connect
+    import skills_ctl
+    return _skill_dirs_in(connect._read(skills_ctl.HOME / ".hermes/config.yaml"))
+
+
+def skills_write(text: str, folder: str, remove: bool) -> str:
+    """skills.external_dirs in config.yaml, as text: one `- path` line."""
+    import connect
+    import skills_ctl
+    item = f"    - {folder}\n"
+    block = connect._top_block(text, "skills")
+    if block is None:
+        if remove:
+            return text
+        return text + ("" if text.endswith("\n") or not text else "\n") + "skills:\n  external_dirs:\n" + item
+    start, end = block
+    body = text[start:end]
+    listed = re.search(r"^  external_dirs:[ \t]*\n((?:    - .*\n?)*)", body, re.MULTILINE)
+    if listed is None:
+        if remove:
+            return text
+        if re.search(r"^  external_dirs:", body, re.MULTILINE):
+            raise ValueError("skills.external_dirs is written in a form this cannot edit")
+        body = body.rstrip("\n") + "\n  external_dirs:\n" + item
+        return text[:start] + body + ("\n" if text[end:] and not body.endswith("\n") else "") + text[end:]
+    lines = [line for line in listed.group(1).splitlines(keepends=True) if line.strip()]
+    keep = [line for line in lines if line[6:].strip().strip("'\"") not in (folder, skills_ctl.tilde(folder))]
+    if not remove:
+        keep.append(item)
+    if keep:
+        new_list = "  external_dirs:\n" + "".join(l if l.endswith("\n") else l + "\n" for l in keep)
+    else:
+        new_list = ""
+    body = body[:listed.start()] + new_list + body[listed.end():]
+    return text[:start] + body + text[end:]

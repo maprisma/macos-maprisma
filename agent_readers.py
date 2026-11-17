@@ -1,0 +1,455 @@
+"""The readers the app has for agents' own settings: each fills an agent_details.Details with the
+agent's model and providers. An adapter names one (details.reader, adapter_data.DETAIL_READERS);
+an agent whose settings none of them knows brings a details hook instead.
+
+Only the keys named here are read; keys, tokens and other values stay where they are.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import threading
+import time
+from pathlib import Path
+
+import agent_details as ad
+
+
+def pi_like(config_dir, details: "ad.Details"):
+    """pi and Oh My Pi: settings.json (default provider/model) and models.json (custom providers);
+    Oh My Pi's own YAML (config.yml modelRoles.default, models.yml providers) where it has it."""
+    config_dir = ad._expand(str(config_dir))
+    settings = ad.read_json(config_dir / "settings.json")
+    model, provider = ad._text(settings.get("defaultModel")), ad._text(settings.get("defaultProvider"), 40)
+    role = _omp_default(ad._read(config_dir / "config.yml") or "")
+    if role:
+        provider, _slash, model = role.partition("/")
+        model, provider = ad._text(model), ad._text(provider, 40)
+    details.model = f"{model} ({provider})" if model and provider else model
+    providers = ad.read_json(config_dir / "models.json").get("providers")
+    if isinstance(providers, dict):
+        for name, entry in list(providers.items())[:50]:
+            if isinstance(entry, dict):
+                details.providers.append(ad.provider_for_url(name, entry.get("baseUrl"),
+                                                             ad._model_count(entry.get("models")),
+                                                             active=not provider or name == provider))
+    for name, url, count in _omp_providers(ad._read(config_dir / "models.yml") or ""):
+        if not any(p.name == name for p in details.providers):
+            details.providers.append(ad.provider_for_url(name, url, count, active=not provider or name == provider))
+
+
+def _omp_default(text: str) -> str:
+    """config.yml's `modelRoles: default: "<provider>/<model>"`, read with a pattern."""
+    block = re.search(r"^modelRoles:[ \t]*\n((?:[ \t]+.*\n?)+)", text, re.MULTILINE)
+    found = block and re.search(r"^[ \t]+default:[ \t]*['\"]?([^'\"\n#]*)", block.group(1), re.MULTILINE)
+    value = found.group(1).strip() if found else ""
+    return value if "/" in value else ""
+
+
+def _omp_providers(text: str) -> list:
+    """models.yml's `providers:` → [(name, baseUrl, number of models)], read with a pattern."""
+    block = re.search(r"^providers:[ \t]*\n((?:[ \t]+.*\n?|\n)+)", text, re.MULTILINE)
+    entries = re.split(r"^  (?=[A-Za-z0-9_.-]+:)", block.group(1), flags=re.MULTILINE) if block else []
+    found = []
+    for entry in entries[:50]:
+        name = re.match(r"([A-Za-z0-9_.-]{1,64}):", entry)
+        url = re.search(r"^    baseUrl:[ \t]*['\"]?([^'\"\s#]+)", entry, re.MULTILINE)
+        if name and url:
+            found.append((name.group(1), url.group(1), len(re.findall(r"^      - id:", entry, re.MULTILINE))))
+    return found
+
+
+def opencode(details: "ad.Details"):
+    root = ad._expand("~/.config/opencode")
+    config = ad.read_json(root / "opencode.json") or ad.read_json(root / "opencode.jsonc")
+    details.model = ad._text(config.get("model"))
+    providers = config.get("provider")
+    if isinstance(providers, dict):
+        for name, entry in list(providers.items())[:50]:
+            if isinstance(entry, dict):
+                options = entry.get("options") if isinstance(entry.get("options"), dict) else {}
+                details.providers.append(ad.provider_for_url(
+                       name, options.get("baseURL"), ad._model_count(entry.get("models")),
+                       active=not details.model or details.model.startswith(name + "/")))
+
+
+def claude(details: "ad.Details"):
+    settings = ad.read_json(ad._expand("~/.claude/settings.json"))
+    details.model = ad._text(settings.get("model")) or claude_session_model()   # none set: as its last session ran
+    env = settings.get("env") if isinstance(settings.get("env"), dict) else {}
+    base = env.get("ANTHROPIC_BASE_URL")
+    if isinstance(base, str) and base:
+        details.providers.append(ad.provider_for_url("Anthropic API", base))
+
+
+CLAUDE_MODEL = re.compile(rb'"model"\s*:\s*"(claude-[A-Za-z0-9._-]{1,80})"')
+CLAUDE_RESCAN = 30.0             # s between looks for the newest session file (the poll runs every 2 s)
+CLAUDE_MAX_ENTRIES = 2000        # project folders, and session files in each, looked at
+_claude_seen = {"folder": None, "at": 0.0, "file": None, "key": None, "model": ""}
+_claude_lock = threading.Lock()                  # the poll and the map's workers both ask
+
+
+def _newest_claude_session(folder):
+    """Path of the most recently written session file (projects/<folder>/<session>.jsonl), by the
+    file's own time (writing to a file does not touch its folder's); a project or file that cannot
+    be read is skipped, not the whole look."""
+    newest = None
+    try:
+        projects = [e.path for _i, e in zip(range(CLAUDE_MAX_ENTRIES), os.scandir(folder))
+                    if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        return None
+    for project in projects:
+        try:
+            with os.scandir(project) as entries:
+                for _i, entry in zip(range(CLAUDE_MAX_ENTRIES), entries):
+                    try:
+                        if not entry.name.endswith(".jsonl") or not entry.is_file(follow_symlinks=False):
+                            continue
+                        mtime = entry.stat(follow_symlinks=False).st_mtime_ns
+                    except OSError:                       # gone since the listing: the others still count
+                        continue
+                    if newest is None or mtime > newest[0]:
+                        newest = (mtime, entry.path)
+        except OSError:
+            continue
+    return newest[1] if newest else None
+
+
+def claude_session_model(root: str = "~/.claude/projects") -> str:
+    """With no "model" in settings.json Claude Code runs its own default: the model of the last reply
+    in its newest session file (projects/<folder>/<session>.jsonl), as the alias the map switches
+    between ("claude-opus-5-5" -> "opus") when it is one; "" when there is none. Only the "model"
+    values of the file's end are read. Called by the 2 s poll and every map refresh, so the
+    newest file is looked for at most every CLAUDE_RESCAN seconds (or when it is gone or there was
+    none), and its end is read again only when the file changed."""
+    with _claude_lock:
+        return _claude_session_model(ad._expand(root))
+
+
+def _claude_session_model(folder) -> str:
+    import online_models
+    seen = _claude_seen
+    now = time.monotonic()
+    if seen["folder"] != folder or seen["file"] is None or now - seen["at"] >= CLAUDE_RESCAN:
+        seen.update(folder=folder, at=now, file=_newest_claude_session(folder))
+    path = seen["file"]
+    if path is None:
+        return ""
+    try:
+        with open(path, "rb") as handle:
+            st = os.fstat(handle.fileno())
+            key = (path, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns)
+            if key == seen["key"]:
+                return seen["model"]
+            handle.seek(max(0, st.st_size - 256 * 1024))
+            found = CLAUDE_MODEL.findall(handle.read(256 * 1024))
+    except OSError:
+        seen["file"] = None                       # gone: look again next time
+        return ""
+    model = found[-1].decode("ascii") if found else ""
+    model = next((a for a in online_models.CLAUDE_ALIASES if a in model.split("-")), model) if model else ""
+    seen.update(key=key, model=model)
+    return model
+
+
+def codex(details: "ad.Details"):
+    config = ad.read_toml(ad._expand("~/.codex/config.toml"))
+    details.model = ad._text(config.get("model"))
+    chosen = ad._text(config.get("model_provider"), 40)
+    providers = config.get("model_providers")
+    if isinstance(providers, dict):
+        for name, entry in list(providers.items())[:50]:
+            if isinstance(entry, dict):
+                details.providers.append(ad.provider_for_url(ad._text(entry.get("name"), 40) or name,
+                                                                entry.get("base_url"), active=name == chosen))
+    if not details.model and not chosen:
+        # None set: Codex's own default, as its last session ran it, or before any session the model its
+        # models cache lists first.
+        details.model = codex_session_model() or codex_cache_model()
+    if chosen and details.model:
+        details.model = f"{details.model} ({chosen})"
+
+
+def codex_cache_model(path: str = "~/.codex/models_cache.json") -> str:
+    """The listed model of Codex's models cache with the lowest priority (the one its picker shows first and
+    a new Codex starts with), "" when there is none."""
+    rows = ad.read_json(ad._expand(path)).get("models")
+    best = None
+    for row in rows[:200] if isinstance(rows, list) else []:
+        if isinstance(row, dict) and row.get("visibility") == "list" and isinstance(row.get("slug"), str) \
+                and isinstance(row.get("priority"), int) and (best is None or row["priority"] < best[0]):
+            best = (row["priority"], row["slug"])
+    return ad._text(best[1]) if best else ""
+
+
+AGY_MODEL = re.compile(rb'selected model override to backend: label="([^"\n]{1,80})"')
+
+
+def agy_model_name(label: str) -> str:
+    """"Gemini 4 Argon (Medium)" → "gemini-4-argon": the label without its effort, as a model id."""
+    name = re.sub(r"\s*\([^)]*\)\s*$", "", label).strip().lower()
+    name = re.sub(r"[^a-z0-9.]+", "-", name).strip("-")
+    return name if re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,79}", name) else ""
+
+
+def agy(details: "ad.Details", root: str = "~/.gemini/antigravity-cli/log"):
+    """Antigravity CLI keeps no model in its settings; its newest log names the model it selected."""
+    folder = ad._expand(root)
+    try:
+        logs = sorted((e.stat().st_mtime, e.path) for _i, e in zip(range(2000), os.scandir(folder))
+                      if e.name.startswith("cli-") and e.name.endswith(".log") and e.is_file(follow_symlinks=False))
+        if not logs:
+            return
+        with open(logs[-1][1], "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            handle.seek(max(0, size - 4 * 1024 * 1024))
+            found = AGY_MODEL.findall(handle.read(4 * 1024 * 1024))
+    except OSError:
+        return
+    if found:
+        details.model = agy_model_name(found[-1].decode("utf-8", "replace"))
+
+
+CODEX_MODEL = re.compile(rb'"type"\s*:\s*"turn_context".*?"model"\s*:\s*"([A-Za-z0-9._:-]{1,80})"')
+
+
+def codex_session_model(root: str = "~/.codex/sessions") -> str:
+    """The model of the last turn in Codex's newest session file (sessions/YYYY/MM/DD/rollout-….jsonl),
+    "" when there is none. Only that key of its turn_context lines is read."""
+    folder = ad._expand(root)
+    for _level in range(3):
+        last = ad._last_dirs(folder)
+        if not last:
+            return ""
+        folder = Path(last[0])
+    try:
+        files = sorted((e.stat().st_mtime, e.path) for _i, e in zip(range(2000), os.scandir(folder))
+                       if e.name.endswith(".jsonl") and e.is_file(follow_symlinks=False))
+        if not files:
+            return ""
+        with open(files[-1][1], "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            handle.seek(max(0, size - 256 * 1024))
+            found = CODEX_MODEL.findall(handle.read(256 * 1024))
+            if not found:
+                handle.seek(0)
+                found = CODEX_MODEL.findall(handle.read(64 * 1024))
+    except OSError:
+        return ""
+    return found[-1].decode("ascii") if found else ""
+
+
+def _newest(folder, levels: int, wanted) -> str | None:
+    """The most recently written regular file levels folders below folder (no links followed) whose
+    name wanted() accepts, at most 2000 entries a folder; one that cannot be read is skipped."""
+    newest, todo = None, [(ad._expand(folder) if isinstance(folder, str) else folder, 0)]
+    while todo:
+        path, depth = todo.pop()
+        try:
+            with os.scandir(path) as entries:
+                for _i, entry in zip(range(2000), entries):
+                    try:
+                        if depth < levels and entry.is_dir(follow_symlinks=False):
+                            todo.append((entry.path, depth + 1))
+                        elif depth == levels and wanted(entry.name) and entry.is_file(follow_symlinks=False):
+                            mtime = entry.stat(follow_symlinks=False).st_mtime_ns
+                            if newest is None or mtime > newest[0]:
+                                newest = (mtime, entry.path)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return newest[1] if newest else None
+
+
+def _tail(path, size: int) -> bytes:
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(max(0, os.fstat(handle.fileno()).st_size - size))
+            return handle.read(size)
+    except OSError:
+        return b""
+
+
+GEMINI_MODEL = re.compile(rb'"model"\s*:\s*"(gemini-[A-Za-z0-9._-]{1,80})"')
+
+
+def gemini(details: "ad.Details"):
+    """Gemini CLI: settings.json's model.name (older files: "model" as text), else the model of the
+    last reply in its newest session file (tmp/<project>/chats/session-*.jsonl, a subagent's
+    <parent>/<id>.jsonl, older session-*.json; agent_sessions' gemini-files)."""
+    model = ad.read_json(ad._expand("~/.gemini/settings.json")).get("model")
+    details.model = ad._text(model.get("name") if isinstance(model, dict) else model)
+    if details.model:
+        return
+    try:
+        projects = [e.path for _i, e in zip(range(2000), os.scandir(ad._expand("~/.gemini/tmp")))
+                    if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        projects = []
+    newest = []
+    for project in projects:
+        for levels, wanted in ((0, lambda n: n.startswith("session-") and n.endswith((".json", ".jsonl"))),
+                               (1, lambda n: n.endswith(".jsonl"))):
+            path = _newest(Path(project) / "chats", levels, wanted)
+            try:
+                if path is not None:
+                    newest.append((os.stat(path, follow_symlinks=False).st_mtime_ns, path))
+            except OSError:
+                pass
+    found = GEMINI_MODEL.findall(_tail(max(newest)[1], 4 * 1024 * 1024)) if newest else []
+    details.model = found[-1].decode("ascii") if found else ""
+
+
+def grok(details: "ad.Details"):
+    """Grok keeps no model in its settings: the one its newest session's last finished turn ran
+    (sessions/<folder>/<session>/usage.json, turns[].modelUsage by model, as Omarchy's
+    omarchy-agent-usage-grok reads it); of several, the one with the most tokens."""
+    path = _newest("~/.grok/sessions", 2, lambda name: name == "usage.json")
+    usage = ad.read_json(Path(path)) if path else {}
+    turns = usage.get("turns") if isinstance(usage.get("turns"), list) else []
+    for turn in reversed(turns[-2000:]):
+        used = turn.get("modelUsage") if isinstance(turn, dict) else None
+        if not isinstance(used, dict):
+            continue
+        tokens = lambda bucket, key: bucket.get(key) if isinstance(bucket.get(key), int) else 0
+        sizes = {name: tokens(bucket, "inputTokens") + tokens(bucket, "outputTokens")
+                 for name, bucket in list(used.items())[:50] if isinstance(name, str) and isinstance(bucket, dict)}
+        if sizes:
+            details.model = ad._text(max(sizes, key=lambda name: sizes[name]))
+            return
+
+
+def crush(details: "ad.Details"):
+    """Crush's ~/.config/crush/crush.json: models.large ({model, provider}: what it works with) and
+    its own providers ({base_url, models}). Its data folder's crush.json keeps the API keys: not read."""
+    config = ad.read_json(ad._expand("~/.config/crush/crush.json"))
+    large = (config.get("models") or {}).get("large") if isinstance(config.get("models"), dict) else None
+    large = large if isinstance(large, dict) else {}
+    model, chosen = ad._text(large.get("model")), ad._text(large.get("provider"), 40)
+    details.model = f"{model} ({chosen})" if model and chosen else model
+    providers = config.get("providers") if isinstance(config.get("providers"), dict) else {}
+    for name, entry in list(providers.items())[:50]:
+        if isinstance(entry, dict):
+            details.providers.append(ad.provider_for_url(name, entry.get("base_url"),
+                                                         ad._model_count(entry.get("models")),
+                                                         active=not chosen or name == chosen))
+
+
+def copilot(details: "ad.Details"):
+    config = ad.read_json(ad._expand("~/.copilot/config.json"))
+    details.model = ad._text(config.get("model"))
+
+
+def cursor(details: "ad.Details"):
+    config = ad.read_json(ad._expand("~/.cursor/cli-config.json"))
+    model = config.get("model")
+    details.model = ad._text(model.get("displayName") or model.get("modelId")) if isinstance(model, dict) \
+        else ad._text(model)
+
+
+def hermes(details: "ad.Details"):
+    """config.yaml's top-level `model:` block (default + provider + base_url),
+    read with a pattern: the file is YAML and only these three keys matter."""
+    text = ad._read(ad._expand("~/.hermes/config.yaml")) or ""
+    block = re.search(r"^model:\s*\n((?:[ \t]+.*\n?)+)", text, re.MULTILINE)
+    if not block:
+        return
+    values = dict(re.findall(r"^[ \t]+(default|provider|base_url):[ \t]*['\"]?([^'\"\n#]*)", block.group(1),
+                             re.MULTILINE))
+    model, provider = ad._text(values.get("default")), ad._text(values.get("provider"), 40)
+    details.model = f"{model} ({provider})" if model and provider else model
+    if values.get("base_url", "").strip():
+        details.providers.append(ad.provider_for_url(provider or "custom", values["base_url"].strip()))
+    # Its own providers (`providers:` → name: {api: URL, models: {id: …}}): the
+    # active one is the model block's provider.
+    block = re.search(r"^providers:[ \t]*\n((?:[ \t]+.*\n?|\n)+)", text, re.MULTILINE)
+    entries = re.split(r"^  (?=[A-Za-z0-9_.-]+:)", block.group(1), flags=re.MULTILINE) if block else []
+    for entry in entries[:50]:
+        name = re.match(r"([A-Za-z0-9_.-]{1,64}):", entry)
+        api = re.search(r"^    (?:api|base_url):[ \t]*['\"]?([^'\"\s#]+)", entry, re.MULTILINE)
+        if not name or not api:
+            continue
+        models = re.search(r"^    models:[ \t]*\n((?:      .*\n?)+)", entry, re.MULTILINE)
+        count = len(re.findall(r"^      [^ \s][^:]*:", models.group(1), re.MULTILINE)) if models else 0
+        if not any(p.name == name.group(1) for p in details.providers):
+            details.providers.append(ad.provider_for_url(name.group(1), api.group(1), count,
+                                                         active=name.group(1) == provider))
+
+
+GOOSE_LOCAL = {"ollama": "http://localhost:11434"}     # its default address when no <NAME>_HOST is set
+
+
+def goose(details: "ad.Details"):
+    """Goose's ~/.config/goose/config.yaml: active_provider and providers.<name>.model (older files:
+    flat GOOSE_PROVIDER, GOOSE_MODEL); a provider's address from its <NAME>_HOST key, for local ones.
+    API keys are not in this file (the keyring, or secrets.yaml): nothing else is read."""
+    text = ad._read(ad._expand("~/.config/goose/config.yaml")) or ""
+    try:
+        import yaml
+        data = yaml.safe_load(text) if text.strip() else {}
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+    providers = data.get("providers") if isinstance(data.get("providers"), dict) else {}
+    active = ad._text(data.get("active_provider") or data.get("GOOSE_PROVIDER"), 40)
+    entry = providers.get(active) if isinstance(providers.get(active), dict) else {}
+    model = ad._text(entry.get("model") or data.get("GOOSE_MODEL"))
+    details.model = f"{model} ({active})" if model and active else model
+    names = [n for n, v in list(providers.items())[:50] if isinstance(n, str) and isinstance(v, dict)
+             and (v.get("enabled") or v.get("configured"))] or ([active] if active else [])
+    for name in names:
+        host = data.get(f"{name.upper()}_HOST")
+        url = host if isinstance(host, str) else GOOSE_LOCAL.get(name)
+        details.providers.append(ad.provider_for_url(name, url, active=name == active))
+
+
+def dsh(details: "ad.Details"):
+    """DeepSeek Harness: providers and default model from its web profile's patch."""
+    import dsh_ctl
+    text = ad._read(dsh_ctl.PATCH) or ""
+    if not dsh_ctl.available() or not text:
+        return
+    provider, model = dsh_ctl.default_model(text)
+    details.model = f"{ad._text(model)} ({ad._text(provider, 40)})" if model and provider else ad._text(model)
+    for name, entry in list(dsh_ctl.providers(text).items())[:50]:
+        if isinstance(entry, dict):
+            details.providers.append(ad.provider_for_url(str(name), entry.get("baseURL"),
+                                                         ad._model_count(entry.get("models")),
+                                                         active=not provider or name == provider))
+
+
+# OpenClaw's own local providers, used without an entry in models.providers (their usual address).
+OPENCLAW_LOCAL = {"llama-cpp": "http://127.0.0.1:8080/v1", "ollama": "http://127.0.0.1:11434",
+                  "lmstudio": "http://127.0.0.1:1234/v1"}
+
+
+def openclaw(details: "ad.Details"):
+    """OpenClaw: ~/.openclaw/openclaw.json, agents.defaults.model (a "provider/model" or
+    {primary: …}) and models.providers (custom and local servers). JSON5 with comments is not read."""
+    config = ad.read_json(ad._expand("~/.openclaw/openclaw.json"))
+    agents = config.get("agents") if isinstance(config.get("agents"), dict) else {}
+    defaults = agents.get("defaults") if isinstance(agents.get("defaults"), dict) else {}
+    chosen = defaults.get("model")
+    primary = ad._text(chosen.get("primary") if isinstance(chosen, dict) else chosen, 160)
+    provider, _sep, model = primary.partition("/") if "/" in primary else ("", "", primary)
+    provider = ad._text(provider, 40)
+    details.model = f"{ad._text(model)} ({provider})" if model and provider else ad._text(model)
+    models = config.get("models") if isinstance(config.get("models"), dict) else {}
+    providers = p if isinstance(p := models.get("providers"), dict) else {}
+    for name, entry in list(providers.items())[:50]:
+        if isinstance(entry, dict):
+            details.providers.append(ad.provider_for_url(name, entry.get("baseUrl"),
+                                                         ad._model_count(entry.get("models")),
+                                                         active=not provider or name == provider))
+    if provider in OPENCLAW_LOCAL and provider not in providers:
+        details.providers.append(ad.provider_for_url(provider, OPENCLAW_LOCAL[provider]))
+
+
+def bionic(details: "ad.Details"):
+    """LM Studio Bionic runs local models with LM Studio's engine and models
+    (no providers to set up): always LM Studio."""
+    details.providers.append(ad.Provider(name="LM Studio", local=True, runtime="LM Studio", active=True))

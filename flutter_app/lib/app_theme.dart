@@ -1,0 +1,407 @@
+import 'dart:math' show min;
+import 'dart:ui' show lerpDouble;
+
+import 'package:flutter/material.dart';
+
+Color? desktopThemeColor(Map theme, String key) {
+  final value = theme[key];
+  if (value is! String || !RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(value)) {
+    return null;
+  }
+  return Color(0xff000000 | int.parse(value.substring(1), radix: 16));
+}
+
+ThemeMode appThemeMode(String mode, Map desktop) {
+  if (mode == 'light') return ThemeMode.light;
+  if (mode == 'dark') return ThemeMode.dark;
+  final background = desktopThemeColor(desktop, 'background');
+  if (background == null) return ThemeMode.system;
+  return background.computeLuminance() < .5 ? ThemeMode.dark : ThemeMode.light;
+}
+
+/// Settings › Corners: the radius of the window's cards, dialogs and the
+/// map's boxes (corners.radius): "windows" follows Hyprland's rounding,
+/// "slight" is 6 (round controls beside square or tiled windows), "rounded"
+/// 12, "square" 0; null (the windows' rounding unknown) means 12.
+const slightRadius = 6, roundedRadius = 12;
+double? cornerRadius(String? setting, int? windowRounding) => switch (setting) {
+  'slight' => 6,
+  'rounded' => 12,
+  'square' => 0,
+  _ => windowRounding?.toDouble(),
+};
+
+/// The corner radius in effect (12 when nothing set it), in Maprisma
+/// Playground's three sizes: cards, dialogs, pop-ups, menus and the map's
+/// boxes take [radius]; buttons, drop-downs, fields, chips and tooltips
+/// [control] (at most 8); check boxes, slider tracks, progress bars and small
+/// marks [small] (at most 4). Square squares them all, the slider's knob stays
+/// small (see [KnobShape]).
+class Corners extends ThemeExtension<Corners> {
+  const Corners(this.radius);
+  final double radius;
+  double get control => min(radius, 8);
+  double get small => min(radius, 4);
+  @override
+  Corners copyWith({double? radius}) => Corners(radius ?? this.radius);
+  @override
+  Corners lerp(Corners? other, double t) =>
+      other == null ? this : Corners(lerpDouble(radius, other.radius, t)!);
+}
+
+double corners(BuildContext context) =>
+    Theme.of(context).extension<Corners>()?.radius ?? 12;
+
+/// Settings › Corners in its three sizes (see [Corners]).
+Corners cornerSizes(BuildContext context) =>
+    Theme.of(context).extension<Corners>() ?? const Corners(12);
+
+/// The desktop's monospace family (app.theme `fonts.mono`) for code, logs
+/// and commands; the interface font is the theme's own fontFamily.
+class AppFonts extends ThemeExtension<AppFonts> {
+  const AppFonts({this.mono});
+  final String? mono;
+  @override
+  AppFonts copyWith({String? mono}) => AppFonts(mono: mono ?? this.mono);
+  @override
+  AppFonts lerp(AppFonts? other, double t) => other ?? this;
+}
+
+/// The monospace family to use: the desktop's, else the system's 'monospace'.
+String monoFont(BuildContext context) =>
+    Theme.of(context).extension<AppFonts>()?.mono ?? 'monospace';
+
+/// [fonts] (app.theme `fonts`) as a family: a non-empty string, else null.
+String? fontFamily(Map? fonts, String key) {
+  final v = fonts?[key];
+  return v is String && v.trim().isNotEmpty ? v.trim() : null;
+}
+
+/// An outlined field's border with the controls' corners.
+OutlineInputBorder controlBorder(BuildContext context) => OutlineInputBorder(
+  borderRadius: BorderRadius.circular(cornerSizes(context).control),
+);
+
+/// [fonts] (app.theme `fonts`): the desktop's interface font for all text,
+/// its monospace font for [monoFont].
+ThemeData appTheme(
+  Brightness brightness, {
+  String mode = 'system',
+  Map desktop = const {},
+  double? radius,
+  Map? fonts,
+}) {
+  var colors = ColorScheme.fromSeed(
+    seedColor: desktopThemeColor(desktop, 'accent') ?? const Color(0xff517f70),
+    brightness: brightness,
+  );
+  final background = desktopThemeColor(desktop, 'background');
+  if (mode == 'system' && background != null) {
+    final foreground =
+        desktopThemeColor(desktop, 'foreground') ?? colors.onSurface;
+    // The card tones step from the desktop's background, as Material's do
+    // from its own surface: cards keep their contrast on any desktop.
+    Color step(double amount) => Color.lerp(background, foreground, amount)!;
+    // The desktop's own accent, not a Material tone of it (as the Launcher):
+    // Back, the Ask AI symbol and buttons take the theme's colour.
+    final accent = desktopThemeColor(desktop, 'accent');
+    colors = colors.copyWith(
+      primary: accent,
+      onPrimary: accent == null
+          ? null
+          : (accent.computeLuminance() > .4 ? Colors.black : Colors.white),
+      surface: background,
+      onSurface: foreground,
+      surfaceContainerLowest: step(.02),
+      surfaceContainerLow: step(.05),
+      surfaceContainer: step(.08),
+      surfaceContainerHigh: step(.11),
+      surfaceContainerHighest: step(.14),
+    );
+  }
+  final r = radius ?? 12;
+  final sizes = Corners(r);
+  final control = BorderRadius.circular(sizes.control);
+  final small = BorderRadius.circular(sizes.small);
+  final controlShape = RoundedRectangleBorder(borderRadius: control);
+  final shape = RoundedRectangleBorder(borderRadius: BorderRadius.circular(r));
+  return ThemeData(
+    colorScheme: colors,
+    useMaterial3: true,
+    fontFamily: fontFamily(fonts, 'ui'),
+    extensions: [
+      sizes,
+      AppFonts(mono: fontFamily(fonts, 'mono')),
+    ],
+    // Every card looks like the map's category cards (app_look SectionCard).
+    cardTheme: CardThemeData(
+      color: colors.surfaceContainerLow,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(r),
+        side: BorderSide(color: colors.outlineVariant),
+      ),
+    ),
+    dialogTheme: DialogThemeData(shape: shape),
+    popupMenuTheme: PopupMenuThemeData(shape: shape),
+    menuTheme: MenuThemeData(
+      style: MenuStyle(shape: WidgetStatePropertyAll(shape)),
+    ),
+    dropdownMenuTheme: DropdownMenuThemeData(
+      menuStyle: MenuStyle(shape: WidgetStatePropertyAll(shape)),
+      inputDecorationTheme: InputDecorationTheme(
+        border: OutlineInputBorder(borderRadius: control),
+      ),
+    ),
+    bottomSheetTheme: BottomSheetThemeData(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(r)),
+      ),
+    ),
+    // Material's default is the inverted surface: a white bar on a dark app.
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: colors.surfaceContainerHigh,
+      contentTextStyle: TextStyle(
+        color: colors.onSurface,
+        fontFamily: fontFamily(fonts, 'ui'),
+      ),
+      actionTextColor: colors.primary,
+      closeIconColor: colors.onSurfaceVariant,
+    ),
+    // Dark with light text (Uwe): on a dark theme the inverted surface is a
+    // light box that is hard to read, so it takes a dark card tone there.
+    tooltipTheme: TooltipThemeData(
+      decoration: BoxDecoration(
+        color: brightness == Brightness.dark
+            ? colors.surfaceContainerHighest
+            : colors.inverseSurface.withValues(alpha: .92),
+        borderRadius: control,
+        border: Border.all(color: colors.outlineVariant),
+      ),
+      textStyle: TextStyle(
+        color: brightness == Brightness.dark
+            ? colors.onSurface
+            : colors.onInverseSurface,
+        fontSize: 13,
+        fontFamily: fontFamily(fonts, 'ui'),
+      ),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(shape: controlShape),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(shape: controlShape),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(shape: controlShape),
+    ),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: ElevatedButton.styleFrom(shape: controlShape),
+    ),
+    iconButtonTheme: IconButtonThemeData(
+      style: IconButton.styleFrom(shape: controlShape),
+    ),
+    segmentedButtonTheme: SegmentedButtonThemeData(
+      style: SegmentedButton.styleFrom(shape: controlShape),
+    ),
+    chipTheme: ChipThemeData(shape: controlShape),
+    checkboxTheme: CheckboxThemeData(
+      shape: RoundedRectangleBorder(borderRadius: small),
+    ),
+    progressIndicatorTheme: ProgressIndicatorThemeData(borderRadius: small),
+    // Square squares the slider too, but keeps its knob small (no block).
+    sliderTheme: SliderThemeData(
+      trackShape: r <= 0
+          ? const RectangularSliderTrackShape()
+          : const RoundedRectSliderTrackShape(),
+      thumbShape: KnobShape(square: r <= 0),
+    ),
+  );
+}
+
+/// The slider's knob: 14 px, round, or square with Square corners (not a
+/// big block).
+class KnobShape extends SliderComponentShape {
+  const KnobShape({this.square = false});
+  final bool square;
+  static const _side = 14.0;
+
+  @override
+  Size getPreferredSize(bool isEnabled, bool isDiscrete) =>
+      const Size.square(_side);
+
+  @override
+  void paint(
+    PaintingContext context,
+    Offset center, {
+    required Animation<double> activationAnimation,
+    required Animation<double> enableAnimation,
+    required bool isDiscrete,
+    required TextPainter labelPainter,
+    required RenderBox parentBox,
+    required SliderThemeData sliderTheme,
+    required TextDirection textDirection,
+    required double value,
+    required double textScaleFactor,
+    required Size sizeWithOverflow,
+  }) {
+    final paint = Paint()..color = sliderTheme.thumbColor ?? Colors.grey;
+    final box = Rect.fromCenter(center: center, width: _side, height: _side);
+    square
+        ? context.canvas.drawRect(box, paint)
+        : context.canvas.drawOval(box, paint);
+  }
+}
+
+/// The preview and the application use the same theme factory.
+class ThemeChoices extends StatelessWidget {
+  const ThemeChoices({
+    super.key,
+    required this.value,
+    required this.enabled,
+    required this.tr,
+    required this.onChanged,
+    this.desktop = const {},
+  });
+  final String value;
+  final bool enabled;
+  final String Function(String) tr;
+  final ValueChanged<String> onChanged;
+  final Map desktop;
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final width = constraints.maxWidth.clamp(0.0, 210.0);
+      return Wrap(
+        spacing: 12,
+        runSpacing: 12,
+        children: [
+          for (final mode in ['system', 'light', 'dark'])
+            SizedBox(
+              width: width,
+              child: Semantics(
+                selected: value == mode,
+                button: true,
+                child: Card(
+                  margin: EdgeInsets.zero,
+                  clipBehavior: Clip.antiAlias,
+                  // A card in a card: one step stronger, so it stands out.
+                  color: Theme.of(context).colorScheme.surfaceContainer,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(corners(context)),
+                    side: BorderSide(
+                      width: value == mode ? 2 : 1,
+                      color: value == mode
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).colorScheme.outlineVariant,
+                    ),
+                  ),
+                  child: InkWell(
+                    key: ValueKey('theme-$mode'),
+                    onTap: enabled ? () => onChanged(mode) : null,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          ExcludeSemantics(
+                            child: SizedBox(
+                              height: 68,
+                              child: CustomPaint(
+                                painter: _ThemePreview(_colors(context, mode)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              Icon(
+                                mode == 'system'
+                                    ? Icons.brightness_auto
+                                    : mode == 'light'
+                                    ? Icons.light_mode
+                                    : Icons.dark_mode,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  tr(
+                                    {
+                                      'system': 'System',
+                                      'light': 'Light',
+                                      'dark': 'Dark',
+                                    }[mode]!,
+                                  ),
+                                ),
+                              ),
+                              if (value == mode)
+                                const Icon(Icons.check, size: 18),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      );
+    },
+  );
+  ColorScheme _colors(BuildContext context, String mode) {
+    final choice = appThemeMode(mode, desktop);
+    final brightness = choice == ThemeMode.system
+        ? MediaQuery.platformBrightnessOf(context)
+        : choice == ThemeMode.dark
+        ? Brightness.dark
+        : Brightness.light;
+    return appTheme(brightness, mode: mode, desktop: desktop).colorScheme;
+  }
+}
+
+class _ThemePreview extends CustomPainter {
+  _ThemePreview(this.colors);
+  final ColorScheme colors;
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()..color = colors.surface;
+    final rect = Offset.zero & size;
+    final shape = RRect.fromRectAndRadius(rect, const Radius.circular(8));
+    canvas.drawRRect(shape, paint);
+    // An outline: a preview of the same mode as the app still shows its edge.
+    canvas.drawRRect(
+      shape,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..color = colors.outlineVariant,
+    );
+    paint.color = colors.primary;
+    canvas.drawCircle(const Offset(12, 12), 3, paint);
+    paint
+      ..color = colors.onSurface
+      ..strokeWidth = 2;
+    canvas.drawLine(const Offset(22, 12), Offset(size.width - 12, 12), paint);
+    for (var i = 0; i < 3; i++) {
+      final x = 10 + i * (size.width - 20) / 3;
+      paint.color = colors.primaryContainer;
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTWH(x, 30, (size.width - 32) / 3, 24),
+          const Radius.circular(4),
+        ),
+        paint,
+      );
+      paint.color = colors.onPrimaryContainer;
+      canvas.drawLine(
+        Offset(x + 5, 38),
+        Offset(x + (size.width - 32) / 3 - 5, 38),
+        paint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _ThemePreview old) => old.colors != colors;
+}
