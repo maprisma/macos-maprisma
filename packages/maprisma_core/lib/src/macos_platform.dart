@@ -296,6 +296,66 @@ List<MacosProcess> macosProcesses({bool fresh = false, int? onlyUid}) {
   ];
 }
 
+final _psIdentityLine = RegExp(
+  r'^\s*(\d+)\s+(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s*$',
+);
+
+/// Parses lightweight macOS `ps -o pid=,pgid=,lstart=` lines into
+/// `pid -> (pgid, roundedStartedEpoch)`. Omits `comm=,args=` so process-group
+/// polling avoids per-process `KERN_PROCARGS2` lookups.
+Map<int, (int, String)> parseMacosProcessIdentities(String output) {
+  final out = <int, (int, String)>{};
+  for (final line in const LineSplitter().convert(output)) {
+    final m = _psIdentityLine.firstMatch(line);
+    if (m == null) continue;
+    final pid = int.parse(m.group(1)!);
+    final pgid = int.parse(m.group(2)!);
+    final lstart = m.group(3)!.replaceAll(RegExp(r'\s+'), ' ').trim();
+    out[pid] = (pgid, '${parseMacosLstart(lstart).round()}');
+  }
+  return out;
+}
+
+/// Queries `(pgid, roundedStartedEpoch)` for a single [pid] on macOS using
+/// `/bin/ps -p <pid> -o pid=,pgid=,lstart=`.
+(int, String)? macosProcessIdentity(int pid) {
+  if (pid <= 0) return null;
+  try {
+    final res = Process.runSync(
+      '/bin/ps',
+      ['-p', '$pid', '-o', 'pid=,pgid=,lstart='],
+      environment: macosCommandCEnv(),
+      stdoutEncoding: const Utf8Codec(allowMalformed: true),
+    );
+    if (res.exitCode != 0) return null;
+    return parseMacosProcessIdentities(res.stdout as String)[pid];
+  } on ProcessException {
+    return null;
+  }
+}
+
+/// Lists `pid -> roundedStartedEpoch` for all macOS processes in process group
+/// [leader] (excluding [leader] itself), using `/bin/ps -axo pid=,pgid=,lstart=`.
+Map<int, String> macosGroupMembers(int leader) {
+  if (leader <= 0) return const {};
+  try {
+    final res = Process.runSync(
+      '/bin/ps',
+      const ['-axo', 'pid=,pgid=,lstart='],
+      environment: macosCommandCEnv(),
+      stdoutEncoding: const Utf8Codec(allowMalformed: true),
+    );
+    if (res.exitCode != 0) return const {};
+    final all = parseMacosProcessIdentities(res.stdout as String);
+    return {
+      for (final e in all.entries)
+        if (e.key != leader && e.value.$1 == leader) e.key: e.value.$2,
+    };
+  } on ProcessException {
+    return const {};
+  }
+}
+
 /// Parses BSD/macOS `/bin/ps -o time=` cumulative CPU time token
 /// (`[dd-]hh:mm:ss[.ff]` or `mm:ss[.ff]`, e.g. `0:03.42`, `125:04.12`,
 /// `1:02:03.45`, `2-03:04:05.67`) into seconds, or null if malformed.

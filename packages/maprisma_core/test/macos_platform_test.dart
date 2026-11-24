@@ -127,6 +127,30 @@ void main() {
         equals(['/opt/homebrew/bin/llama-server', '--port', '8080']),
       );
     });
+
+    test('parses lightweight ps pid, pgid, lstart identities', () {
+      const psIdOut = '''
+ 5120  5120 Tue Nov 17 17:00:05 2026
+ 5125  5120 Tue Nov  3 09:05:01 2026
+ 5130  5130 Tue Nov 17 17:00:06 2026
+''';
+      final ids = parseMacosProcessIdentities(psIdOut);
+      expect(ids.keys, equals([5120, 5125, 5130]));
+      expect(
+        ids[5120],
+        equals((
+          5120,
+          '${(DateTime(2026, 11, 17, 17, 0, 5).millisecondsSinceEpoch / 1000.0).round()}',
+        )),
+      );
+      expect(
+        ids[5125],
+        equals((
+          5120,
+          '${(DateTime(2026, 11, 3, 9, 5, 1).millisecondsSinceEpoch / 1000.0).round()}',
+        )),
+      );
+    });
   });
 
   group('macOS lsof port security check', () {

@@ -1,6 +1,7 @@
 import 'dart:io';
 
-import 'package:maprisma_core/src/macos_platform.dart' show macosProcesses;
+import 'package:maprisma_core/src/macos_platform.dart'
+    show macosProcessIdentity;
 import 'package:maprisma_core/src/model_hub.dart' show boundedOutput;
 import 'package:maprisma_core/src/process_group.dart';
 import 'package:test/test.dart';
@@ -11,14 +12,14 @@ import 'package:test/test.dart';
 const _stubborn = r'''
 (trap '' TERM; exec sleep 60) >/dev/null 2>&1 </dev/null &
 echo $! > "$1"
-sleep 0.3
+sleep 0.5
 if [ "$2" = exit ]; then echo done; exit 0; fi
 sleep 60
 ''';
 
 bool _running(int pid) {
   if (Platform.isMacOS) {
-    return macosProcesses(fresh: true).any((p) => p.pid == pid);
+    return macosProcessIdentity(pid) != null;
   }
   try {
     final text = File('/proc/$pid/stat').readAsStringSync();

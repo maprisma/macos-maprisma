@@ -69,9 +69,10 @@ final class ProcessGroup {
     // Right after Process.start the child may not have run setsid() yet: a
     // moment for it to lead its group, so its start time is known.
     final pause = Platform.isMacOS
-        ? const Duration(milliseconds: 8)
+        ? const Duration(milliseconds: 10)
         : const Duration(milliseconds: 2);
-    for (var i = 0; i < 25; i++) {
+    final tries = Platform.isMacOS ? 50 : 25;
+    for (var i = 0; i < tries; i++) {
       final own = processIdentity(leader);
       if (own == null || (own.$1 == leader && own.$2 == leader)) break;
       sleep(pause);
@@ -94,30 +95,40 @@ final class ProcessGroup {
 
   /// Look through the group every [every] while the program runs, so what it
   /// starts is held before it may end (Dart reaps it at once).
-  void watch([Duration every = const Duration(milliseconds: 100)]) {
-    _watch ??= Timer.periodic(every, (_) => _take());
+  void watch([Duration? every]) {
+    final interval =
+        every ??
+        (Platform.isMacOS
+            ? const Duration(milliseconds: 50)
+            : const Duration(milliseconds: 100));
+    _watch ??= Timer.periodic(interval, (_) => _take());
   }
 
   void _take() {
     // The leader before anything is held (just started), else only while a
     // held member anchors the group; checked again after the look-up.
     if (_fds.isNotEmpty && !_anchored) return;
-    final own = processIdentity(leader);
-    if (own != null && own.$1 == leader && own.$2 == leader) {
-      _leaderStart ??= own.$3;
-      _hold(leader, own.$3);
+    if (!_fds.containsKey(leader)) {
+      final own = processIdentity(leader);
+      if (own != null && own.$1 == leader && own.$2 == leader) {
+        _leaderStart ??= own.$3;
+        _hold(leader, own.$3);
+      }
     }
     if (_fds.isEmpty) return; // the leader is gone or not ours: nothing anchors
     final before = Map.of(_fds);
+    var added = false;
     for (final e in groupMembers(leader).entries) {
+      if (_fds.containsKey(e.key)) continue;
       final start = _leaderStart;
       // A member is never older than the leader of its group.
       if (start != null &&
           (int.tryParse(e.value) ?? 0) < (int.tryParse(start) ?? 0)) {
         continue;
       }
-      _hold(e.key, e.value);
+      if (_hold(e.key, e.value)) added = true;
     }
+    if (!added) return;
     final anchor = before.entries.any(
       (e) =>
           !posix.pidfdExited(e.value) && processIdentity(e.key)?.$1 == leader,
@@ -131,15 +142,17 @@ final class ProcessGroup {
     }
   }
 
-  void _hold(int pid, String start) {
-    if (_fds.containsKey(pid)) return;
+  bool _hold(int pid, String start) {
+    if (_fds.containsKey(pid)) return false;
     final fd = posix.pidfdOpen(pid);
-    if (fd < 0) return;
+    if (fd < 0) return false;
     // Checked after opening: the pidfd pins the process whose identity is read.
     if (processIdentity(pid) == (leader, leader, start)) {
       _fds[pid] = fd;
+      return true;
     } else {
       posix.close(fd);
+      return false;
     }
   }
 

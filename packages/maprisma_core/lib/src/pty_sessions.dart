@@ -5,7 +5,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import 'core_tasks.dart' show newHandle;
-import 'macos_platform.dart' show macosProcesses;
+import 'macos_platform.dart' show macosGroupMembers, macosProcessIdentity;
 import 'posix_ffi.dart';
 
 /// terminal_sessions: owned PTY sessions (Linux & macOS). Only the service
@@ -227,11 +227,9 @@ bool _exited(int fd, {int waitMs = 0}) {
 /// ps (macOS).
 (int, int, String)? processIdentity(int pid) {
   if (Platform.isMacOS) {
-    final proc = macosProcesses(
-      fresh: true,
-    ).where((p) => p.pid == pid).firstOrNull;
-    if (proc == null) return null;
-    return (proc.pgid, proc.pgid, '${proc.startedEpoch.round()}');
+    final id = macosProcessIdentity(pid);
+    if (id == null) return null;
+    return (id.$1, id.$1, id.$2);
   }
   try {
     final text = File('/proc/$pid/stat').readAsStringSync();
@@ -247,16 +245,8 @@ bool _exited(int fd, {int waitMs = 0}) {
 
 /// _group_members: the processes of this leader's group and session.
 Map<int, String> groupMembers(int leader) {
+  if (Platform.isMacOS) return macosGroupMembers(leader);
   final found = <int, String>{};
-  if (Platform.isMacOS) {
-    for (final proc in macosProcesses(fresh: true)) {
-      if (proc.pid == leader) continue;
-      if (proc.pgid == leader) {
-        found[proc.pid] = '${proc.startedEpoch.round()}';
-      }
-    }
-    return found;
-  }
   List<FileSystemEntity> entries;
   try {
     entries = Directory('/proc').listSync();
