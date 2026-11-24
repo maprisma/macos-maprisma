@@ -84,8 +84,8 @@ jobs:
           /usr/bin/ditto -x -k dist/Maprisma-macos-arm64.zip "$archive_check"
           app="$archive_check/Maprisma.app"
           codesign --verify --deep --strict "$app"
-          lipo -verify_arch arm64 "$app/Contents/MacOS/Maprisma"
-          lipo -verify_arch arm64 "$app/Contents/MacOS/maprisma-core"
+          lipo "$app/Contents/MacOS/Maprisma" -verify_arch arm64
+          lipo "$app/Contents/MacOS/maprisma-core" -verify_arch arm64
           codesign -d --entitlements :- "$app" > "$archive_check/entitlements.plist"
           test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.app-sandbox' "$archive_check/entitlements.plist")" = false
           test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$archive_check/entitlements.plist")" = true

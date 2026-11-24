@@ -100,8 +100,8 @@ echo "==> Compiling bundled maprisma-core worker executable..."
 chmod 755 "$STAGED_APP/Contents/MacOS/maprisma-core"
 # The Flutter release may be universal, but the standalone Dart worker is native.
 # Both executables must support the architecture advertised by this package.
-lipo -verify_arch arm64 "$STAGED_APP/Contents/MacOS/Maprisma"
-lipo -verify_arch arm64 "$STAGED_APP/Contents/MacOS/maprisma-core"
+lipo "$STAGED_APP/Contents/MacOS/Maprisma" -verify_arch arm64
+lipo "$STAGED_APP/Contents/MacOS/maprisma-core" -verify_arch arm64
 
 echo "==> Bundling user manuals and helper metadata..."
 RES_DATA="$STAGED_APP/Contents/Resources/data"
