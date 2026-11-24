@@ -7,6 +7,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   macos:
     name: Build & Test (macOS Apple Silicon)
@@ -21,7 +24,20 @@ jobs:
         uses: subosito/flutter-action@v2
         with:
           channel: stable
+          # Use the SDK from the diagnosed run; upgrade deliberately.
+          flutter-version: '3.50.0'
+          architecture: arm64
           cache: true
+
+      - name: Check native macOS build tools
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          xcrun --find clang
+          pod --version
+          python3 --version
+          flutter --version
+          dart --version
 
       - name: Enable Flutter macOS desktop
         run: flutter config --enable-macos-desktop
@@ -43,10 +59,40 @@ jobs:
       - name: Build & ad-hoc sign Maprisma.app
         run: ./build-mac.sh
 
+      - name: Verify Runner CocoaPods settings
+        working-directory: flutter_app
+        run: |
+          diff macos/Podfile.lock macos/Pods/Manifest.lock
+          xcodebuild -workspace macos/Runner.xcworkspace -scheme Runner \
+            -configuration Release -showBuildSettings > build/macos/release-settings.txt
+          awk -F ' = ' '
+            /Build settings for action build and target / { runner = /target Runner:/ }
+            runner && $1 ~ /PODS_PODFILE_DIR_PATH$/ && $2 != "" { podfile = 1 }
+            runner && $1 ~ /PODS_ROOT$/ && $2 != "" { pods = 1 }
+            END { exit !(podfile && pods) }
+          ' build/macos/release-settings.txt
+
       - name: Archive Maprisma.app artifact
         run: |
           cd dist
           /usr/bin/ditto -c -k --sequesterRsrc --keepParent Maprisma.app Maprisma-macos-arm64.zip
+
+      - name: Verify archived app and compiled worker
+        run: |
+          archive_check="$(mktemp -d)"
+          trap 'rm -rf "$archive_check"' EXIT
+          /usr/bin/ditto -x -k dist/Maprisma-macos-arm64.zip "$archive_check"
+          app="$archive_check/Maprisma.app"
+          codesign --verify --deep --strict "$app"
+          lipo -verify_arch arm64 "$app/Contents/MacOS/Maprisma"
+          lipo -verify_arch arm64 "$app/Contents/MacOS/maprisma-core"
+          codesign -d --entitlements :- "$app" > "$archive_check/entitlements.plist"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.app-sandbox' "$archive_check/entitlements.plist")" = false
+          test "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.device.audio-input' "$archive_check/entitlements.plist")" = true
+          XDG_CONFIG_HOME="$archive_check/config" \
+            XDG_DATA_HOME="$archive_check/data" \
+            XDG_STATE_HOME="$archive_check/state" \
+            "$app/Contents/MacOS/maprisma-core" < /dev/null
 
       - name: Upload Maprisma.app artifact
         uses: actions/upload-artifact@v4

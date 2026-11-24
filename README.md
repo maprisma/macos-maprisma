@@ -118,11 +118,12 @@ Maprisma runs natively on Apple Silicon Macs (macOS 13.0 Ventura or newer, teste
 
 ### Prerequisites on Uwe's M4 MacBook Pro
 
-1. **Xcode** (with macOS SDK & Command Line Tools) and **CocoaPods**:
+1. **Xcode** (with macOS SDK & Command Line Tools), **CocoaPods**, and **Python 3.10+**
+   for build-time bundle checks (Python is not shipped in the app):
    ```sh
    xcode-select --install
    sudo xcodebuild -license accept
-   brew install cocoapods
+   brew install cocoapods python
    ```
 2. **Flutter SDK** (`stable` channel, Dart 3.11+):
    ```sh

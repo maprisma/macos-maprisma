@@ -12,6 +12,23 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
+if [[ "$(uname -m)" != "arm64" ]]; then
+  echo "error: build-mac.sh requires a native Apple Silicon shell and Flutter SDK (arm64)." >&2
+  exit 1
+fi
+
+# Xcode and CocoaPods are required by Flutter; Python only runs build-time gates.
+for tool in xcodebuild pod codesign lipo python3; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    echo "error: '$tool' not found in PATH." >&2
+    exit 1
+  fi
+done
+if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 10))'; then
+  echo "error: Python 3.10+ is required for the build-time bundle check." >&2
+  exit 1
+fi
+
 if ! command -v flutter >/dev/null 2>&1; then
   echo "error: 'flutter' not found in PATH." >&2
   exit 1
@@ -32,6 +49,10 @@ ADDONS_REPO="${MAPRISMA_ADDONS_DIR:-$ROOT/../maprisma-addons}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --addons)
+      if [[ $# -lt 2 || -z "$2" || "$2" == --* ]]; then
+        echo "error: --addons requires a directory." >&2
+        exit 1
+      fi
       ADDONS_REPO="$2"
       shift 2
       ;;
@@ -63,21 +84,27 @@ fi
 
 DIST_DIR="$ROOT/dist"
 DIST_APP="$DIST_DIR/Maprisma.app"
-rm -rf "$DIST_APP"
 mkdir -p "$DIST_DIR"
+STAGE_DIR="$(mktemp -d "$DIST_DIR/.maprisma-build.XXXXXX")"
+trap 'rm -rf "$STAGE_DIR"' EXIT
+STAGED_APP="$STAGE_DIR/Maprisma.app"
 
 # Use ditto so FlutterMacOS.framework internal symlinks stay intact.
-/usr/bin/ditto "$BUILT_APP" "$DIST_APP"
+/usr/bin/ditto "$BUILT_APP" "$STAGED_APP"
 
 echo "==> Compiling bundled maprisma-core worker executable..."
 (
   cd "$ROOT/packages/maprisma_core"
-  "$DART_BIN" compile exe bin/maprisma-core.dart -o "$DIST_APP/Contents/MacOS/maprisma-core"
+  "$DART_BIN" compile exe bin/maprisma-core.dart -o "$STAGED_APP/Contents/MacOS/maprisma-core"
 )
-chmod 755 "$DIST_APP/Contents/MacOS/maprisma-core"
+chmod 755 "$STAGED_APP/Contents/MacOS/maprisma-core"
+# The Flutter release may be universal, but the standalone Dart worker is native.
+# Both executables must support the architecture advertised by this package.
+lipo -verify_arch arm64 "$STAGED_APP/Contents/MacOS/Maprisma"
+lipo -verify_arch arm64 "$STAGED_APP/Contents/MacOS/maprisma-core"
 
 echo "==> Bundling user manuals and helper metadata..."
-RES_DATA="$DIST_APP/Contents/Resources/data"
+RES_DATA="$STAGED_APP/Contents/Resources/data"
 mkdir -p "$RES_DATA"
 for pdf in "$ROOT"/data/user-manual*.pdf; do
   [[ -f "$pdf" ]] && cp -p "$pdf" "$RES_DATA/"
@@ -87,18 +114,28 @@ if [[ -f "$ROOT/data/helpers.json" ]]; then
 fi
 : > "$RES_DATA/instance.lock"
 
-if [[ -f "$ROOT/addons.py" && -d "$ADDONS_REPO/dist" ]]; then
-  VER="$(sed -n 's/^MAPRISMA_VERSION = "\([0-9.]*\)"/\1/p' "$ROOT/addons.py" | head -n 1)"
+if [[ -d "$ADDONS_REPO/dist" ]]; then
+  VER="$(sed -n 's/^version: \([0-9][0-9.]*\).*/\1/p' "$ROOT/flutter_app/pubspec.yaml")"
   ADAPTERS_ZIP="$ADDONS_REPO/dist/adapters-${VER}.zip"
   if [[ -n "$VER" && -f "$ADAPTERS_ZIP" ]]; then
     echo "==> Unpacking signed add-ons from $ADAPTERS_ZIP..."
-    python3 "$ROOT/packaging/unpack-adapters.py" "$ADAPTERS_ZIP" "$DIST_APP/Contents/Resources/addons"
+    python3 "$ROOT/packaging/unpack-adapters.py" "$ADAPTERS_ZIP" "$STAGED_APP/Contents/Resources/addons"
   fi
 fi
 
+# The same no-Python release gate as Linux; Python is a build tool only.
+python3 "$ROOT/tools/check-bundle.py" "$STAGED_APP"
+
 echo "==> Ad-hoc signing dist/Maprisma.app..."
-codesign --force -s - "$DIST_APP/Contents/MacOS/maprisma-core"
-codesign --force --deep --entitlements "$ROOT/flutter_app/macos/Runner/Release.entitlements" -s - "$DIST_APP"
-codesign --verify --deep --strict "$DIST_APP"
+# Xcode already signed the embedded frameworks. Sign the added worker, then
+# reseal the outer app with its Release entitlements. --deep during signing
+# would overwrite the frameworks' signatures and apply app entitlements to them.
+codesign --force -s - "$STAGED_APP/Contents/MacOS/maprisma-core"
+codesign --force --entitlements "$ROOT/flutter_app/macos/Runner/Release.entitlements" -s - "$STAGED_APP"
+codesign --verify --deep --strict "$STAGED_APP"
+
+# Preserve the previous artifact until compilation, bundling and signing pass.
+rm -rf "$DIST_APP"
+mv "$STAGED_APP" "$DIST_APP"
 
 echo "==> Built: $DIST_APP"
